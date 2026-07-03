@@ -8,8 +8,8 @@
 
 推荐使用方式：
 1. 解压本压缩包到任意目录，例如桌面。
-2. Windows 用户双击「双击安装Codex.cmd」。
-3. macOS 用户双击「双击安装Codex.command」。
+2. Windows 用户双击「Windows双击安装Codex.cmd」。
+3. macOS 用户双击「macOS双击安装Codex.command」。
 4. Windows 出现 UAC 管理员授权时点击“是”；macOS 如需管理员权限会提示输入系统密码。
 5. 脚本会自动下载并安装：Git、Node.js、Python、Codex CLI；如已配置安装包，也会安装 Codex Windows App 和常用 Skills。
 6. 到输入 OPENAI_API_KEY 的步骤时，粘贴自己的 Key，然后回车。
@@ -20,8 +20,8 @@
 说明：
 - Windows 和 macOS 的双击入口格式不同，所以压缩包里会同时放 .cmd 和 .command 两个入口。
 - 如果 macOS 提示没有执行权限，可以打开终端进入本目录后执行：
-  chmod +x 双击安装Codex.command install-codex-macos.sh
-  ./双击安装Codex.command
+  chmod +x macOS双击安装Codex.command install-codex-macos.sh
+  ./macOS双击安装Codex.command
 
 可选免输入密钥方式：
 - 在本目录创建 codex-auth.json，内容格式如下：

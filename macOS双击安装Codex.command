@@ -18,7 +18,7 @@ pause_and_exit() {
 
 if [ "$(uname -s)" != "Darwin" ]; then
   printf "当前不是 macOS。\n"
-  printf "Windows 用户请双击“双击安装Codex.cmd”。\n"
+  printf "Windows 用户请双击“Windows双击安装Codex.cmd”。\n"
   pause_and_exit 1
 fi
 

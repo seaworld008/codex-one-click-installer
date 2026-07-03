@@ -16,7 +16,7 @@
 解压后双击运行：
 
 ```text
-双击安装Codex.cmd
+Windows双击安装Codex.cmd
 ```
 
 或在 PowerShell 中运行：
@@ -36,14 +36,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1
 解压后双击运行：
 
 ```text
-双击安装Codex.command
+macOS双击安装Codex.command
 ```
 
 如果系统提示没有执行权限，再用终端运行：
 
 ```bash
-chmod +x 双击安装Codex.command install-codex-macos.sh
-./双击安装Codex.command
+chmod +x macOS双击安装Codex.command install-codex-macos.sh
+./macOS双击安装Codex.command
 ```
 
 安装完成后，重新打开终端或 PowerShell：
