@@ -13,7 +13,7 @@
 
 ## Windows
 
-双击运行：
+解压后双击运行：
 
 ```text
 双击安装Codex.cmd
@@ -33,9 +33,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1
 
 ## macOS
 
+解压后双击运行：
+
+```text
+双击安装Codex.command
+```
+
+如果系统提示没有执行权限，再用终端运行：
+
 ```bash
-chmod +x install-codex-macos.sh
-./install-codex-macos.sh
+chmod +x 双击安装Codex.command install-codex-macos.sh
+./双击安装Codex.command
 ```
 
 安装完成后，重新打开终端或 PowerShell：
@@ -44,6 +52,8 @@ chmod +x install-codex-macos.sh
 codex --version
 codex
 ```
+
+> 说明：Windows 和 macOS 的双击入口格式不同，所以仓库提供 `.cmd` 和 `.command` 两个原生入口。它们会自动调用对应系统的安装脚本。
 
 ## 密钥配置
 

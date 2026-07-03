@@ -6,24 +6,22 @@
 - Windows 8 / Windows 8.1：尽量使用仍可获取的旧版官方依赖；如果官方依赖不支持，会尽早提示
 - macOS 13.5+：x64 / Apple Silicon
 
-Windows 使用方式：
+推荐使用方式：
 1. 解压本压缩包到任意目录，例如桌面。
-2. 双击「双击安装Codex.cmd」。
-3. 出现 UAC 管理员授权时点击“是”。
-4. 脚本会自动下载并安装：Git、Node.js、Python、Codex CLI；如已配置安装包，也会安装 Codex Windows App 和常用 Skills。
-5. 到输入 OPENAI_API_KEY 的步骤时，粘贴自己的 Key，然后回车。
-6. 安装完成后，重新打开 PowerShell，执行：
+2. Windows 用户双击「双击安装Codex.cmd」。
+3. macOS 用户双击「双击安装Codex.command」。
+4. Windows 出现 UAC 管理员授权时点击“是”；macOS 如需管理员权限会提示输入系统密码。
+5. 脚本会自动下载并安装：Git、Node.js、Python、Codex CLI；如已配置安装包，也会安装 Codex Windows App 和常用 Skills。
+6. 到输入 OPENAI_API_KEY 的步骤时，粘贴自己的 Key，然后回车。
+7. 安装完成后，重新打开 PowerShell 或终端，执行：
    codex --version
    codex
 
-macOS 使用方式：
-1. 打开终端，进入本目录。
-2. 执行：
-   chmod +x install-codex-macos.sh
-   ./install-codex-macos.sh
-3. 安装完成后，重新打开终端，执行：
-   codex --version
-   codex
+说明：
+- Windows 和 macOS 的双击入口格式不同，所以压缩包里会同时放 .cmd 和 .command 两个入口。
+- 如果 macOS 提示没有执行权限，可以打开终端进入本目录后执行：
+  chmod +x 双击安装Codex.command install-codex-macos.sh
+  ./双击安装Codex.command
 
 可选免输入密钥方式：
 - 在本目录创建 codex-auth.json，内容格式如下：
