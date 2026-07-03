@@ -1,0 +1,14 @@
+codex-auth.json
+downloads.local.json
+codex-skills.zip
+*.exe
+*.msi
+*.pkg
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.log
+.DS_Store
+Thumbs.db
