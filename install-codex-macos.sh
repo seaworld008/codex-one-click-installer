@@ -4,6 +4,8 @@ set -euo pipefail
 # Codex macOS 一键安装脚本
 # 支持：macOS 13.5+，x64 / arm64
 
+UPDATE="${CODEX_UPDATE:-0}"
+UPDATE_DEPENDENCIES="${CODEX_UPDATE_DEPENDENCIES:-0}"
 NODE_VERSION="${CODEX_NODE_VERSION:-22.17.0}"
 PYTHON_VERSION="${CODEX_PYTHON_VERSION:-3.12.10}"
 INSTALL_ROOT="${CODEX_INSTALL_ROOT:-$HOME/.local/codex-installer}"
@@ -38,6 +40,8 @@ fail() {
 parse_args() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --update) UPDATE=1 ;;
+      --update-dependencies) UPDATE_DEPENDENCIES=1 ;;
       --check-only) CHECK_ONLY=1 ;;
       --verify-downloads) VERIFY_DOWNLOADS=1 ;;
       --non-interactive) NON_INTERACTIVE=1 ;;
@@ -49,7 +53,7 @@ parse_args() {
         DOWNLOAD_MIRROR="$1"
         ;;
       --help|-h)
-        printf "用法：%s [--check-only] [--verify-downloads] [--non-interactive] [--skip-python] [--skip-skills] [--mirror china|official]\n" "$0"
+        printf "用法：%s [--update] [--update-dependencies] [--check-only] [--verify-downloads] [--non-interactive] [--skip-python] [--skip-skills] [--mirror china|official]\n" "$0"
         exit 0
         ;;
       *) fail "未知参数：$1" ;;
@@ -185,11 +189,24 @@ ensure_system() {
 }
 
 show_download_plan() {
-  step "安装计划"
+  local action="安装"
+  if [ "$UPDATE" = "1" ]; then action="安装/更新"; fi
+  step "${action}计划"
   local node_dist="node-v$NODE_VERSION-darwin-$CODEX_ARCH"
   local node_urls=()
   local python_urls=()
   local url
+  if [ "$UPDATE" = "1" ]; then
+    info "运行模式：更新"
+    info "更新范围：Codex CLI、可选 Skills"
+    if [ "$UPDATE_DEPENDENCIES" = "1" ]; then
+      info "依赖策略：更新 Node.js / Python 到当前计划版本"
+    else
+      info "依赖策略：默认只补缺，不强制升级 Node.js / Python"
+    fi
+  else
+    info "运行模式：安装"
+  fi
   while IFS= read -r url; do node_urls+=("$url"); done < <(url_candidates "${CODEX_NODE_URL:-}" "https://npmmirror.com/mirrors/node/v$NODE_VERSION/$node_dist.tar.gz" "https://nodejs.org/dist/v$NODE_VERSION/$node_dist.tar.gz")
   while IFS= read -r url; do python_urls+=("$url"); done < <(url_candidates "${CODEX_PYTHON_URL:-}" "https://npmmirror.com/mirrors/python/$PYTHON_VERSION/python-$PYTHON_VERSION-macos11.pkg" "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-macos11.pkg")
 
@@ -203,6 +220,9 @@ show_download_plan() {
     info "npm registry：$CODEX_NPM_REGISTRY"
   elif [ "$DOWNLOAD_MIRROR" = "china" ]; then
     info "npm registry：https://registry.npmmirror.com"
+  fi
+  if [ -n "${CODEX_SKILLS_URL:-}" ]; then
+    info "Codex Skills：$CODEX_SKILLS_URL"
   fi
 }
 
@@ -227,6 +247,10 @@ verify_download_plan() {
     done
     [ "$ok" = "1" ] || fail "Python 所有下载源都不可访问。请检查网络/代理，或配置 CODEX_PYTHON_URL。"
   fi
+
+  if [ "$SKIP_SKILLS" != "1" ] && [ -n "${CODEX_SKILLS_URL:-}" ]; then
+    check_url "Codex Skills" "$CODEX_SKILLS_URL" || fail "Codex Skills 下载源不可访问。请检查网络/代理，或配置 CODEX_SKILLS_URL。"
+  fi
 }
 
 ensure_git() {
@@ -243,12 +267,13 @@ ensure_git() {
 
 ensure_node() {
   step "检查 Node.js"
-  if command -v node >/dev/null 2>&1; then
+  if command -v node >/dev/null 2>&1 && [ "$UPDATE_DEPENDENCIES" != "1" ]; then
     local major
     major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
     if [ "$major" -ge 16 ]; then
       node -v
       npm -v
+      info "已检测到 Node.js 16+，跳过 Node.js 安装。使用 --update-dependencies 可按当前计划版本重新安装。"
       return
     fi
   fi
@@ -271,8 +296,9 @@ ensure_node() {
 
 ensure_python() {
   step "检查 Python"
-  if command -v python3 >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1 && [ "$UPDATE_DEPENDENCIES" != "1" ]; then
     python3 --version
+    info "已检测到 Python 3，跳过 Python 安装。使用 --update-dependencies 可按当前计划版本重新安装。"
     return
   fi
 
@@ -286,7 +312,7 @@ ensure_python() {
 }
 
 install_codex_cli() {
-  step "安装 Codex CLI"
+  step "安装/更新 Codex CLI"
   mkdir -p "$NPM_PREFIX"
   npm config set prefix "$NPM_PREFIX"
   local registry="${CODEX_NPM_REGISTRY:-}"
@@ -387,6 +413,15 @@ write_codex_config() {
     return
   fi
 
+  if [ "$UPDATE" = "1" ]; then
+    if [ -f "$auth" ]; then
+      info "更新模式：保留已有认证文件：$auth"
+    else
+      info "更新模式：未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。"
+    fi
+    return
+  fi
+
   printf "\n请输入 OPENAI_API_KEY。直接回车则跳过，不覆盖已有 auth.json。\n"
   read -r -s -p "OPENAI_API_KEY: " api_key
   printf "\n"
@@ -402,7 +437,8 @@ write_codex_config() {
 }
 
 show_versions() {
-  step "版本检查"
+  local title="${1:-版本检查}"
+  step "$title"
   git --version || true
   node -v || true
   npm -v || true
@@ -412,14 +448,19 @@ show_versions() {
 
 main() {
   parse_args "$@"
-  info "Codex macOS 一键安装开始。日志文件：$LOG_FILE"
+  local action="安装"
+  if [ "$UPDATE" = "1" ]; then action="更新"; fi
+  info "Codex macOS 一键$action 开始。日志文件：$LOG_FILE"
   ensure_system
   show_download_plan
+  if [ "$UPDATE" = "1" ]; then
+    show_versions "更新前版本"
+  fi
   if [ "$VERIFY_DOWNLOADS" = "1" ]; then
     verify_download_plan
   fi
   if [ "$CHECK_ONLY" = "1" ]; then
-    printf "\nCheckOnly 预检完成：未执行安装、未写入 Codex 配置。\n"
+    printf "\nCheckOnly 预检完成：未执行%s、未写入 Codex 配置。\n" "$action"
     return
   fi
   ensure_git
@@ -433,9 +474,9 @@ main() {
   fi
   write_codex_config
   append_path_once "$HOME/.zshrc"
-  show_versions
+  show_versions "$action 后版本检查"
 
-  printf "\n安装完成。请重新打开终端，然后执行：\n"
+  printf "\n%s完成。请重新打开终端，然后执行：\n" "$action"
   printf "  codex --version\n"
   printf "  codex\n"
   printf "\n日志位置：%s\n" "$LOG_FILE"

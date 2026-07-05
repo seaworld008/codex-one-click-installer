@@ -43,6 +43,7 @@ jobs:
         run: |
           bash -n install-codex-macos.sh
           bash -n macOS双击安装Codex.command
+          bash -n macOS双击更新Codex.command
 
   windows-powershell-parse:
     name: Windows PowerShell parser
@@ -62,12 +63,17 @@ jobs:
           }
 
   windows-simulated-matrix:
-    name: Windows plan (${{ matrix.scenario.name }})
+    name: Windows ${{ matrix.mode.name }} plan (${{ matrix.scenario.name }})
     runs-on: windows-2022
     needs: windows-powershell-parse
     strategy:
       fail-fast: false
       matrix:
+        mode:
+          - name: install
+            args: ""
+          - name: update
+            args: "-Update"
         scenario:
           - name: win10-pro-22h2-x64
             caption: Microsoft Windows 10 Pro
@@ -98,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check install plan
+      - name: Check ${{ matrix.mode.name }} plan
         shell: powershell
         run: |
           $args = @(
@@ -113,18 +119,26 @@ jobs:
             "-TestWindowsVersion", "${{ matrix.scenario.version }}",
             "-TestArch", "${{ matrix.scenario.arch }}"
           )
+          if ("${{ matrix.mode.args }}" -ne "") {
+            $args += "${{ matrix.mode.args }}"
+          }
           if ($env:VERIFY_DOWNLOADS -eq "true") {
             $args += "-VerifyDownloads"
           }
           & powershell.exe @args
 
   windows-hosted-runners:
-    name: Hosted Windows (${{ matrix.runner }})
+    name: Hosted Windows ${{ matrix.mode.name }} (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     needs: windows-powershell-parse
     strategy:
       fail-fast: false
       matrix:
+        mode:
+          - name: install
+            args: ""
+          - name: update
+            args: "-Update"
         runner:
           - windows-2022
           - windows-latest
@@ -133,7 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check actual hosted runner
+      - name: Check actual hosted runner ${{ matrix.mode.name }} plan
         shell: powershell
         run: |
           $args = @(
@@ -145,17 +159,25 @@ jobs:
             "-NonInteractive",
             "-DownloadMirror", "china"
           )
+          if ("${{ matrix.mode.args }}" -ne "") {
+            $args += "${{ matrix.mode.args }}"
+          }
           if ($env:VERIFY_DOWNLOADS -eq "true") {
             $args += "-VerifyDownloads"
           }
           & powershell.exe @args
 
   macos-matrix:
-    name: macOS plan (${{ matrix.macos_version }}, ${{ matrix.arch }})
+    name: macOS ${{ matrix.mode.name }} plan (${{ matrix.macos_version }}, ${{ matrix.arch }})
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
+        mode:
+          - name: install
+            args: ""
+          - name: update
+            args: "--update"
         macos_version:
           - "13.5"
           - "14.0"
@@ -169,10 +191,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check install plan
+      - name: Check ${{ matrix.mode.name }} plan
         run: |
           chmod +x install-codex-macos.sh
           args=(--check-only --mirror china)
+          if [ -n "${{ matrix.mode.args }}" ]; then
+            args+=("${{ matrix.mode.args }}")
+          fi
           if [ "$VERIFY_DOWNLOADS" = "true" ]; then
             args+=(--verify-downloads)
           fi
@@ -197,7 +222,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check real Win10 environment
+      - name: Check real Win10 environment install plan
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -CheckOnly -NoPause -NonInteractive -VerifyDownloads -DownloadMirror china
+
+      - name: Check real Win10 environment update plan
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -Update -CheckOnly -NoPause -NonInteractive -VerifyDownloads -DownloadMirror china

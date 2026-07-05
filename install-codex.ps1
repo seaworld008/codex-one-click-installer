@@ -1,8 +1,10 @@
 ﻿# Codex Windows 一键安装脚本
 # 支持：Windows 10 / Windows 11；Windows 8 / 8.1 使用旧版官方依赖的兼容路径
-# 用法：双击同目录下的「Windows双击安装Codex.cmd」
+# 用法：双击同目录下的「Windows双击安装Codex.cmd」或「Windows双击更新Codex.cmd」
 
 param(
+    [switch]$Update,
+    [switch]$UpdateDependencies,
     [switch]$SkipGit,
     [switch]$SkipPython,
     [switch]$SkipSkills,
@@ -20,6 +22,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$ActionName = $(if ($Update) { "更新" } else { "安装" })
+$ActionPlanName = $(if ($Update) { "安装/更新" } else { "安装" })
 
 # ========== 公开官方版本配置 ==========
 # 默认走“兼容优先”版本。Codex CLI 当前只要求 Node.js >= 16，
@@ -81,6 +85,8 @@ function Invoke-SelfElevate {
         if ($SkipPython) { $args += " -SkipPython" }
         if ($SkipSkills) { $args += " -SkipSkills" }
         if ($SkipCodexApp) { $args += " -SkipCodexApp" }
+        if ($Update) { $args += " -Update" }
+        if ($UpdateDependencies) { $args += " -UpdateDependencies" }
         if ($CheckOnly) { $args += " -CheckOnly" }
         if ($VerifyDownloads) { $args += " -VerifyDownloads" }
         if ($NoPause) { $args += " -NoPause" }
@@ -375,7 +381,16 @@ function Get-UrlFileName {
 function Write-PlanSummary {
     param([pscustomobject]$Plan)
 
-    Write-Step "安装计划"
+    Write-Step "$($ActionPlanName)计划"
+    Write-Host "运行模式：$ActionName" -ForegroundColor White
+    if ($Update) {
+        Write-Host "更新范围：Codex CLI、可选 Codex Windows App、可选 Skills" -ForegroundColor White
+        if ($UpdateDependencies) {
+            Write-Host "依赖策略：更新 Git / Node.js / Python 到当前计划版本" -ForegroundColor White
+        } else {
+            Write-Host "依赖策略：默认只补缺，不强制升级 Git / Node.js / Python" -ForegroundColor White
+        }
+    }
     Write-Host "下载源模式：$($Plan.DownloadMirror)" -ForegroundColor White
     Write-Host "Git 安装包：$($Plan.GitFile)" -ForegroundColor White
     foreach ($url in @($Plan.GitUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
@@ -385,6 +400,12 @@ function Write-PlanSummary {
     foreach ($url in @($Plan.PythonUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
     if (-not [string]::IsNullOrWhiteSpace($Plan.NpmRegistry)) {
         Write-Host "npm registry：$($Plan.NpmRegistry)" -ForegroundColor White
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
+        Write-Host "Codex Skills：$($Plan.SkillsUrl)" -ForegroundColor White
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
+        Write-Host "Codex Windows App：$($Plan.CodexAppUrl)" -ForegroundColor White
     }
 }
 
@@ -411,7 +432,9 @@ function Test-DownloadPlan {
     param(
         [pscustomobject]$Plan,
         [bool]$IncludeGit,
-        [bool]$IncludePython
+        [bool]$IncludePython,
+        [bool]$IncludeSkills,
+        [bool]$IncludeCodexApp
     )
 
     Write-Step "下载源可达性检查"
@@ -419,6 +442,12 @@ function Test-DownloadPlan {
     if ($IncludeGit) { $checks.Add([pscustomobject]@{ Name = "Git for Windows"; Urls = @($Plan.GitUrls) }) }
     $checks.Add([pscustomobject]@{ Name = "Node.js"; Urls = @($Plan.NodeUrls) })
     if ($IncludePython) { $checks.Add([pscustomobject]@{ Name = "Python"; Urls = @($Plan.PythonUrls) }) }
+    if ($IncludeSkills -and -not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
+        $checks.Add([pscustomobject]@{ Name = "Codex Skills"; Urls = @($Plan.SkillsUrl) })
+    }
+    if ($IncludeCodexApp -and -not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
+        $checks.Add([pscustomobject]@{ Name = "Codex Windows App"; Urls = @($Plan.CodexAppUrl) })
+    }
 
     foreach ($check in $checks) {
         $ok = $false
@@ -695,6 +724,12 @@ function Write-CodexConfig {
     if (Test-Path $localAuthJson) {
         Copy-Item -Path $localAuthJson -Destination $authPath -Force
         Write-Host "已从脚本同目录 codex-auth.json 写入认证文件：$authPath" -ForegroundColor Green
+    } elseif ($Update) {
+        if (Test-Path $authPath) {
+            Write-Host "更新模式：保留已有认证文件：$authPath" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "更新模式：未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。" -ForegroundColor DarkYellow
+        }
     } elseif ($NonInteractive) {
         if (Test-Path $authPath) {
             Write-Host "非交互模式：保留已有认证文件：$authPath" -ForegroundColor DarkYellow
@@ -720,7 +755,7 @@ function Write-CodexConfig {
 function Install-CodexCli {
     param([pscustomobject]$Plan)
 
-    Write-Step "配置 npm 并安装 Codex CLI"
+    Write-Step "配置 npm 并安装/更新 Codex CLI"
     try {
         Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
     } catch {
@@ -764,7 +799,7 @@ function Install-CodexCli {
 
 function Install-CodexApp {
     param([string]$Installer)
-    Write-Step "安装 Codex Windows App"
+    Write-Step "安装/更新 Codex Windows App"
     Write-Host "先尝试静默安装；如果安装器不支持静默参数，会自动改为普通安装窗口。" -ForegroundColor DarkYellow
     $silentOk = $false
     try {
@@ -780,7 +815,8 @@ function Install-CodexApp {
 }
 
 function Show-Versions {
-    Write-Step "版本检查"
+    param([string]$Title = "版本检查")
+    Write-Step $Title
     Refresh-Path
     $commands = @(
         @{Name='git'; Args='--version'},
@@ -813,7 +849,7 @@ Enable-Tls12
 Start-Transcript -Path $LogFile -Append | Out-Null
 
 try {
-    Write-Host "Codex Windows 一键安装开始。日志文件：$LogFile" -ForegroundColor Cyan
+    Write-Host "Codex Windows 一键$ActionName 开始。日志文件：$LogFile" -ForegroundColor Cyan
 
     $osInfo = Get-WindowsInfo
     $arch = Get-NormalizedArch
@@ -826,18 +862,21 @@ try {
     Write-Host "安装路径：$($mode.DisplayName)" -ForegroundColor White
     Invoke-EnvironmentPreflight -OsInfo $osInfo -Arch $arch -Mode $mode
     Write-PlanSummary -Plan $plan
+    if ($Update) {
+        Show-Versions -Title "更新前版本"
+    }
 
     if ($mode.IsLegacy) {
         Write-Warning "Windows 8/8.1 已经过官方生命周期。脚本会尽量安装仍可获取的旧版官方依赖，但 Codex 最新版本可能不再保证在旧系统完整可用。"
     }
 
     if ($VerifyDownloads) {
-        Test-DownloadPlan -Plan $plan -IncludeGit:(-not $SkipGit) -IncludePython:(-not $SkipPython)
+        Test-DownloadPlan -Plan $plan -IncludeGit:(-not $SkipGit) -IncludePython:(-not $SkipPython) -IncludeSkills:(-not $SkipSkills) -IncludeCodexApp:(-not $SkipCodexApp)
     }
 
     if ($CheckOnly) {
         Write-Host ""
-        Write-Host "CheckOnly 预检完成：未执行安装、未写入 Codex 配置。" -ForegroundColor Green
+        Write-Host "CheckOnly 预检完成：未执行$($ActionName)、未写入 Codex 配置。" -ForegroundColor Green
         exit 0
     }
 
@@ -846,8 +885,8 @@ try {
     }
 
     if (-not $SkipGit) {
-        if (Get-CommandPath "git") {
-            Write-Info "已检测到 Git，跳过 Git 安装。"
+        if ((Get-CommandPath "git") -and -not $UpdateDependencies) {
+            Write-Info "已检测到 Git，跳过 Git 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
         } else {
             $gitName = Get-UrlFileName -Url $plan.GitUrl -Fallback $plan.GitFile
             $gitFile = Join-Path $WorkDir $gitName
@@ -856,8 +895,8 @@ try {
         }
     }
 
-    if (Test-NodeReady) {
-        Write-Info "已检测到 Node.js 16+，跳过 Node.js 安装。"
+    if ((Test-NodeReady) -and -not $UpdateDependencies) {
+        Write-Info "已检测到 Node.js 16+，跳过 Node.js 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
     } else {
         $nodeName = Get-UrlFileName -Url $plan.NodeUrl -Fallback $plan.NodeFile
         $nodeFile = Join-Path $WorkDir $nodeName
@@ -866,8 +905,8 @@ try {
     }
 
     if (-not $SkipPython) {
-        if (Test-PythonReady) {
-            Write-Info "已检测到 Python 3，跳过 Python 安装。"
+        if ((Test-PythonReady) -and -not $UpdateDependencies) {
+            Write-Info "已检测到 Python 3，跳过 Python 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
         } else {
             $pythonName = Get-UrlFileName -Url $plan.PythonUrl -Fallback $plan.PythonFile
             $pythonFile = Join-Path $WorkDir $pythonName
@@ -909,17 +948,17 @@ try {
         }
     }
 
-    Show-Versions
+    Show-Versions -Title "$($ActionName)后版本检查"
 
     Write-Host ""
-    Write-Host "安装完成。建议重新打开一个 PowerShell 窗口，然后执行：" -ForegroundColor Green
+    Write-Host "$($ActionName)完成。建议重新打开一个 PowerShell 窗口，然后执行：" -ForegroundColor Green
     Write-Host "  codex --version" -ForegroundColor White
     Write-Host "  codex" -ForegroundColor White
     Write-Host ""
     Write-Host "日志位置：$LogFile" -ForegroundColor DarkGray
 } catch {
     Write-Host ""
-    Write-Host "安装失败：$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "$($ActionName)失败：$($_.Exception.Message)" -ForegroundColor Red
     Write-Host "日志位置：$LogFile" -ForegroundColor Yellow
     exit 1
 } finally {
