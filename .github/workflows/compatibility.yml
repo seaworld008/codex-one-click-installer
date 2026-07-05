@@ -1,0 +1,203 @@
+name: Compatibility
+
+on:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      verify_downloads:
+        description: "检查 Node/Python/Git 下载源可达性"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_self_hosted_windows:
+        description: "在已注册的真实 Win10 self-hosted runner 上测试"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax
+        run: |
+          bash -n install-codex-macos.sh
+          bash -n macOS双击安装Codex.command
+
+  windows-powershell-parse:
+    name: Windows PowerShell parser
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse install-codex.ps1 with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\install-codex.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Host
+            exit 1
+          }
+
+  windows-simulated-matrix:
+    name: Windows plan (${{ matrix.scenario.name }})
+    runs-on: windows-2022
+    needs: windows-powershell-parse
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - name: win10-pro-22h2-x64
+            caption: Microsoft Windows 10 Pro
+            version: 10.0.19045
+            arch: x64
+          - name: win10-enterprise-ltsc-1809-x64
+            caption: Microsoft Windows 10 Enterprise LTSC
+            version: 10.0.17763
+            arch: x64
+          - name: win11-pro-x64
+            caption: Microsoft Windows 11 Pro
+            version: 10.0.22631
+            arch: x64
+          - name: win11-arm64
+            caption: Microsoft Windows 11 Pro
+            version: 10.0.26100
+            arch: arm64
+          - name: win8-legacy-x64
+            caption: Microsoft Windows 8
+            version: 6.2.9200
+            arch: x64
+          - name: win81-legacy-x64
+            caption: Microsoft Windows 8.1
+            version: 6.3.9600
+            arch: x64
+    env:
+      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check install plan
+        shell: powershell
+        run: |
+          $args = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\install-codex.ps1",
+            "-CheckOnly",
+            "-NoPause",
+            "-NonInteractive",
+            "-DownloadMirror", "china",
+            "-TestWindowsCaption", "${{ matrix.scenario.caption }}",
+            "-TestWindowsVersion", "${{ matrix.scenario.version }}",
+            "-TestArch", "${{ matrix.scenario.arch }}"
+          )
+          if ($env:VERIFY_DOWNLOADS -eq "true") {
+            $args += "-VerifyDownloads"
+          }
+          & powershell.exe @args
+
+  windows-hosted-runners:
+    name: Hosted Windows (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    needs: windows-powershell-parse
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - windows-2022
+          - windows-latest
+    env:
+      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check actual hosted runner
+        shell: powershell
+        run: |
+          $args = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\install-codex.ps1",
+            "-CheckOnly",
+            "-NoPause",
+            "-NonInteractive",
+            "-DownloadMirror", "china"
+          )
+          if ($env:VERIFY_DOWNLOADS -eq "true") {
+            $args += "-VerifyDownloads"
+          }
+          & powershell.exe @args
+
+  macos-matrix:
+    name: macOS plan (${{ matrix.runner }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - macos-13
+          - macos-latest
+        arch:
+          - x64
+          - arm64
+    env:
+      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
+      CODEX_TEST_ARCH: ${{ matrix.arch }}
+      CODEX_TEST_MACOS_VERSION: "13.5"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check install plan
+        run: |
+          chmod +x install-codex-macos.sh
+          args=(--check-only --mirror china)
+          if [ "$VERIFY_DOWNLOADS" = "true" ]; then
+            args+=(--verify-downloads)
+          fi
+          ./install-codex-macos.sh "${args[@]}"
+
+  self-hosted-win10:
+    name: Real Win10 self-hosted (${{ matrix.edition }})
+    if: github.event_name == 'workflow_dispatch' && inputs.run_self_hosted_windows == 'true'
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - edition: Pro
+            label: win10-pro
+          - edition: Enterprise
+            label: win10-enterprise
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check real Win10 environment
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -CheckOnly -NoPause -NonInteractive -VerifyDownloads -DownloadMirror china

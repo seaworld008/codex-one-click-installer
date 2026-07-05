@@ -4,12 +4,22 @@
 
 ## 支持范围
 
-- Windows 10 / Windows 11：安装当前官方依赖。
+- Windows 10 / Windows 11：默认安装兼容优先的官方依赖，适配专业版、企业版、LTSC 常见环境。
 - Windows 8.1：使用旧版官方 Git / Node.js / Python 兼容路径，尽量完成安装。
 - Windows 8：使用更保守的旧版官方依赖，尽量完成安装。
 - macOS 13.5+：支持 x64 和 Apple Silicon。
 
 > Windows 8 / 8.1 已过官方生命周期。脚本会尽力安装，但 Codex 最新版本可能不再保证在旧系统完整可用。
+> GitHub 官方托管 runner 不是 Windows 10 桌面版。仓库内的 GitHub Actions 会做安装计划、下载源和脚本语法矩阵测试；如需真实 Win10 专业版/企业版测试，请注册 self-hosted runner 并使用 workflow_dispatch 触发。
+
+## 默认下载源
+
+脚本默认使用国内友好的公开加速源：
+
+- Node.js / Python / Git for Windows：优先 `https://npmmirror.com/mirrors/...`，失败后回退官方源。
+- npm registry：默认 `https://registry.npmmirror.com`，安装 Codex CLI 失败时自动回退 `https://registry.npmjs.org`。
+
+如果你在海外网络、公司内网或有自己的镜像，可设置 `CODEX_DOWNLOAD_MIRROR=official`，或使用环境变量 / `downloads.local.json` 覆盖具体 URL。
 
 ## Windows
 
@@ -29,6 +39,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1
 
 ```powershell
 .\install-codex.ps1 -SkipGit -SkipPython -SkipSkills -SkipCodexApp
+```
+
+预检模式，不安装、不写配置，适合先排查系统兼容性和下载源：
+
+```powershell
+.\install-codex.ps1 -CheckOnly -VerifyDownloads -NoPause
 ```
 
 ## macOS
@@ -75,6 +91,9 @@ codex
 
 | 字段 | 环境变量 | 用途 |
 | --- | --- | --- |
+| `DownloadMirror` | `CODEX_DOWNLOAD_MIRROR` | 下载源模式：`china` 或 `official` |
+| `NodeVersion` | `CODEX_NODE_VERSION` | 覆盖默认 Node.js 版本 |
+| `PythonVersion` | `CODEX_PYTHON_VERSION` | 覆盖默认 Python 版本 |
 | `GitUrl` | `CODEX_GIT_URL` | Git for Windows 安装包 |
 | `NodeUrl` | `CODEX_NODE_URL` | Node.js 安装包 |
 | `PythonUrl` | `CODEX_PYTHON_URL` | Python 安装包 |
@@ -88,13 +107,33 @@ codex
 
 ```json
 {
+  "DownloadMirror": "china",
   "SkillsUrl": "https://example.invalid/codex-skills.zip",
   "CodexAppUrl": "https://example.invalid/Codex%20Installer.exe",
-  "NpmRegistry": "https://registry.npmjs.org",
+  "NpmRegistry": "https://registry.npmmirror.com",
   "CodexBaseUrl": "https://api.openai.com/v1",
   "CodexModel": "gpt-5.5"
 }
 ```
+
+## GitHub Actions 兼容性测试
+
+仓库提供 `.github/workflows/compatibility.yml`：
+
+- Windows PowerShell 5.1 语法解析。
+- Windows 10 Pro、Windows 10 Enterprise LTSC、Windows 11、Windows 8/8.1 的安装计划模拟。
+- Windows hosted runner 的真实环境预检。
+- macOS x64 / arm64 安装计划模拟。
+- 可选 self-hosted Win10 Pro / Enterprise 真实机器测试。
+
+真实 Win10 桌面版测试需要在 GitHub 仓库注册 self-hosted runner，并给机器加标签：
+
+```text
+self-hosted, Windows, X64, win10-pro
+self-hosted, Windows, X64, win10-enterprise
+```
+
+然后在 GitHub Actions 页面手动运行 `Compatibility` workflow，并把 `run_self_hosted_windows` 设为 `true`。
 
 ## 安全提示
 

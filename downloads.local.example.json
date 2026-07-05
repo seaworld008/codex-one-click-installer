@@ -1,10 +1,13 @@
 {
+  "DownloadMirror": "china",
+  "NodeVersion": "",
+  "PythonVersion": "",
   "GitUrl": "",
   "NodeUrl": "",
   "PythonUrl": "",
   "SkillsUrl": "",
   "CodexAppUrl": "",
-  "NpmRegistry": "",
+  "NpmRegistry": "https://registry.npmmirror.com",
   "CodexBaseUrl": "",
   "CodexModel": ""
 }
