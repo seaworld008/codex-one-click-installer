@@ -151,21 +151,21 @@ jobs:
           & powershell.exe @args
 
   macos-matrix:
-    name: macOS plan (${{ matrix.runner }}, ${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    name: macOS plan (${{ matrix.macos_version }}, ${{ matrix.arch }})
+    runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
-        runner:
-          - macos-13
-          - macos-latest
+        macos_version:
+          - "13.5"
+          - "14.0"
         arch:
           - x64
           - arm64
     env:
       VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
       CODEX_TEST_ARCH: ${{ matrix.arch }}
-      CODEX_TEST_MACOS_VERSION: "13.5"
+      CODEX_TEST_MACOS_VERSION: ${{ matrix.macos_version }}
     steps:
       - uses: actions/checkout@v4
 
