@@ -1,0 +1,69 @@
+name: 安装失败 / Bug report
+description: 报告安装失败、脚本报错或行为异常
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供完整环境和关键日志，这会显著加快定位速度。
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      description: 例如 Windows 10 Pro 22H2、Windows 11、macOS 14.5
+      placeholder: Windows 10 Pro 22H2
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: CPU 架构
+      options:
+        - x64
+        - arm64 / Apple Silicon
+        - x86
+        - 不确定
+    validations:
+      required: true
+  - type: dropdown
+    id: entry
+    attributes:
+      label: 运行入口
+      options:
+        - Windows双击安装Codex.cmd
+        - install-codex.ps1
+        - macOS双击安装Codex.command
+        - install-codex-macos.sh
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请写出你执行了哪些操作，以及错误出现在哪一步。
+      placeholder: |
+        1. 解压最新 Release
+        2. 双击 ...
+        3. 出现 ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 关键日志或报错
+      description: 请去掉 API Key、token、私有域名或公司内部地址后再粘贴。
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经去掉了日志中的真实 API Key、token 和私有下载地址。
+          required: true
+        - label: 我使用的是本仓库最新 Release 或 main 分支脚本。
+          required: true

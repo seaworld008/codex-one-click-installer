@@ -1,0 +1,49 @@
+name: 兼容性反馈 / Compatibility report
+description: 反馈某个系统、架构、镜像源或企业环境下的安装兼容性
+title: "[Compatibility] "
+labels:
+  - compatibility
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个模板适合反馈“某个系统能否安装成功”、LTSC/企业版/旧系统兼容性、下载源可达性等结果。
+  - type: input
+    id: environment
+    attributes:
+      label: 环境
+      placeholder: Windows 10 Enterprise LTSC 1809 x64 / macOS 14 arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: 结果
+      options:
+        - 安装成功
+        - 预检成功
+        - 下载源不可达
+        - 安装失败
+        - 需要人工绕过
+    validations:
+      required: true
+  - type: dropdown
+    id: mirror
+    attributes:
+      label: 下载源模式
+      options:
+        - china
+        - official
+        - 自定义 downloads.local.json
+        - 自定义环境变量
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: 详细说明
+      description: 可以补充代理、公司内网、安全软件、PowerShell 版本、终端类型等信息。
+      placeholder: 例如：公司内网代理下 npmmirror 可访问，GitHub release 下载较慢。
+    validations:
+      required: false

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 下载最新 Release
+    url: https://github.com/seaworld008/codex-one-click-installer/releases/latest
+    about: 如果你只是想安装，请优先下载最新 Release 压缩包。

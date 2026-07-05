@@ -1,0 +1,29 @@
+name: 功能建议 / Feature request
+description: 建议新的安装能力、平台支持、下载源或文档改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 这个建议想帮助哪类用户，或解决什么安装阻碍？
+      placeholder: 我希望脚本支持 ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 如果你已有具体方案、命令、下载源或参考链接，请写在这里。
+      placeholder: 可以增加 ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 可选替代方案
+      description: 如果已有临时绕过方法，也可以补充。
+    validations:
+      required: false
