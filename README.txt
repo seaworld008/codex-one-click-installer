@@ -6,12 +6,17 @@
 - Windows 8 / Windows 8.1：尽量使用仍可获取的旧版官方依赖；如果官方依赖不支持，会尽早提示
 - macOS 13.5+：x64 / Apple Silicon
 
+默认安装内容：
+- Windows / macOS：安装 Codex CLI
+- Windows：如果同目录存在 Codex Installer.exe，或配置了 CODEX_APP_INSTALLER_URL / downloads.local.json 的 CodexAppUrl，会尽量安装 Codex Windows App
+- Windows / macOS：如果同目录存在 codex-skills.zip，或配置了 CODEX_SKILLS_URL，会安装 Codex Skills
+
 推荐使用方式：
 1. 解压本压缩包到任意目录，例如桌面。
 2. Windows 用户双击「Windows双击安装Codex.cmd」。
 3. macOS 用户双击「macOS双击安装Codex.command」。
 4. Windows 出现 UAC 管理员授权时点击“是”；macOS 如需管理员权限会提示输入系统密码。
-5. 脚本会自动下载并安装：Git、Node.js、Python、Codex CLI；如已配置安装包，也会安装 Codex Windows App 和常用 Skills。
+5. 脚本会自动下载并安装：Git、Node.js、Python、Codex CLI；如已配置安装包或下载地址，也会安装 Codex Windows App 和常用 Skills。
 6. 到输入 OPENAI_API_KEY 的步骤时，粘贴自己的 Key，然后回车。
 7. 安装完成后，重新打开 PowerShell 或终端，执行：
    codex --version
@@ -44,6 +49,11 @@
   CODEX_NPM_REGISTRY
   CODEX_BASE_URL
   CODEX_MODEL
+
+Codex Windows App 可选安装：
+- 方式一：把 Codex Installer.exe 放在脚本同目录。
+- 方式二：设置 CODEX_APP_INSTALLER_URL，或在 downloads.local.json 中填写 CodexAppUrl。
+- 如只想安装 CLI，可运行 install-codex.ps1 时添加 -SkipCodexApp。
 
 预检排错：
 - Windows 可在 PowerShell 中运行：
