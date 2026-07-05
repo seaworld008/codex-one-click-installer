@@ -5,6 +5,10 @@ title Codex 一键安装
 
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_FILE=%SCRIPT_DIR%install-codex.ps1"
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" (
+  set "POWERSHELL_EXE=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+)
 
 echo.
 echo ========================================
@@ -20,14 +24,13 @@ if not exist "%SCRIPT_FILE%" (
   goto :end
 )
 
-where powershell.exe >nul 2>nul
-if errorlevel 1 (
+if not exist "%POWERSHELL_EXE%" (
   echo 未找到 powershell.exe，无法继续自动安装。
   echo 请确认当前系统为 Windows 8/8.1/10/11。
   goto :end
 )
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_FILE%"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_FILE%"
 
 :end
 echo.
