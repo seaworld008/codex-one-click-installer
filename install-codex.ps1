@@ -1,4 +1,4 @@
-# Codex Windows 一键安装脚本
+﻿# Codex Windows 一键安装脚本
 # 支持：Windows 10 / Windows 11；Windows 8 / 8.1 使用旧版官方依赖的兼容路径
 # 用法：双击同目录下的「Windows双击安装Codex.cmd」
 
