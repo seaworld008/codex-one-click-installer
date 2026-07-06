@@ -46,6 +46,7 @@ $LegacyGitTag = "v2.46.0.windows.1"
 $LegacyNodeVersion = "16.20.2"
 $LegacyPythonWin81Version = "3.12.10"
 $LegacyPythonWin8Version = "3.8.10"
+$CodexAppWingetTimeoutSeconds = 300
 
 # ========== 基础路径 ==========
 $ScriptDir = Split-Path -Parent $PSCommandPath
@@ -437,8 +438,13 @@ function Write-PlanSummary {
     if (-not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
         Write-Host "Codex Skills：$($Plan.SkillsUrl)" -ForegroundColor White
     }
+    Write-Host "Codex Windows App：默认使用 Microsoft Store / winget install Codex -s msstore（300 秒超时）" -ForegroundColor White
+    $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
+    if (Test-Path $localAppInstaller) {
+        Write-Host "Codex Windows App 兜底：同目录 Codex Installer.exe" -ForegroundColor White
+    }
     if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
-        Write-Host "Codex Windows App：$($Plan.CodexAppUrl)" -ForegroundColor White
+        Write-Host "Codex Windows App 自定义兜底：$($Plan.CodexAppUrl)" -ForegroundColor White
     }
 }
 
@@ -478,8 +484,12 @@ function Test-DownloadPlan {
     if ($IncludeSkills -and -not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
         $checks.Add([pscustomobject]@{ Name = "Codex Skills"; Urls = @($Plan.SkillsUrl) })
     }
-    if ($IncludeCodexApp -and -not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
-        $checks.Add([pscustomobject]@{ Name = "Codex Windows App"; Urls = @($Plan.CodexAppUrl) })
+    if ($IncludeCodexApp) {
+        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
+            $checks.Add([pscustomobject]@{ Name = "Codex Windows App"; Urls = @($Plan.CodexAppUrl) })
+        } else {
+            Write-Info "Codex Windows App 默认通过 Microsoft Store / winget 获取，预检不对 Store 包执行 URL HEAD 检查。"
+        }
     }
 
     foreach ($check in $checks) {
@@ -652,6 +662,17 @@ function Invoke-EnvironmentPreflight {
         }
     } else {
         Write-Host "管理员权限：CheckOnly 模式不要求" -ForegroundColor DarkGray
+    }
+
+    if ($SkipCodexApp) {
+        Write-Host "winget：已使用 -SkipCodexApp，跳过 Codex Windows App 路径检查" -ForegroundColor DarkGray
+    } else {
+        $winget = Get-CommandPath "winget"
+        if ($winget) {
+            Write-Host "winget：已检测到，可用于官方 Microsoft Store 路径安装/更新 Codex Windows App" -ForegroundColor Green
+        } else {
+            Write-Warning "winget：未检测到。Codex Windows App 默认 Store 安装路径可能不可用；CLI、Git、Node.js、Python 安装不受影响。"
+        }
     }
 
     if ($OsInfo.ProductType -and ([int]$OsInfo.ProductType -ne 1)) {
@@ -954,9 +975,105 @@ function Install-CodexCli {
     throw "npm install -g @openai/codex@latest 执行失败。请检查 npm registry、代理、证书或公司网络策略。ExitCode=$lastExit"
 }
 
-function Install-CodexApp {
+function Invoke-WingetCodexAppCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$Winget,
+        [Parameter(Mandatory=$true)][string[]]$Arguments,
+        [int]$TimeoutSeconds = $CodexAppWingetTimeoutSeconds
+    )
+
+    Write-Host "执行：winget $($Arguments -join ' ')" -ForegroundColor White
+    Write-Host "超时保护：$TimeoutSeconds 秒内未完成则改用本地/自定义安装器兜底。" -ForegroundColor DarkGray
+
+    $runId = [guid]::NewGuid().ToString("N")
+    $stdoutFile = Join-Path $WorkDir "winget-$runId.out.log"
+    $stderrFile = Join-Path $WorkDir "winget-$runId.err.log"
+    $process = $null
+
+    try {
+        $process = Start-Process -FilePath $Winget -ArgumentList $Arguments -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -NoNewWindow -PassThru
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+            throw "winget 执行超过 $TimeoutSeconds 秒，可能是 Microsoft Store 下载较慢或网络受限。"
+        }
+    } catch {
+        throw $_
+    }
+
+    $output = New-Object System.Collections.Generic.List[string]
+    if (Test-Path $stdoutFile) {
+        foreach ($line in (Get-Content -Path $stdoutFile -ErrorAction SilentlyContinue)) { $output.Add([string]$line) }
+    }
+    if (Test-Path $stderrFile) {
+        foreach ($line in (Get-Content -Path $stderrFile -ErrorAction SilentlyContinue)) { $output.Add([string]$line) }
+    }
+
+    $exitCode = $process.ExitCode
+    $text = ($output -join "`n").Trim()
+
+    foreach ($line in @($output)) {
+        $lineText = [string]$line
+        if (-not [string]::IsNullOrWhiteSpace($lineText)) {
+            Write-Host $lineText -ForegroundColor DarkGray
+        }
+    }
+
+    if ($null -eq $exitCode -or $exitCode -eq 0) { return }
+
+    $knownOk = @(
+        "already installed",
+        "no applicable update",
+        "no available upgrade",
+        "已安装",
+        "没有可用",
+        "没有适用",
+        "无需更新"
+    )
+    foreach ($pattern in $knownOk) {
+        if ($text -match ([regex]::Escape($pattern))) {
+            Write-Info "winget 返回非零退出码，但输出显示 Codex App 已安装或无需更新。"
+            return
+        }
+    }
+
+    throw "winget 执行失败：winget $($Arguments -join ' ')。ExitCode=$exitCode"
+}
+
+function Test-CodexAppInstalledByWinget {
+    param([Parameter(Mandatory=$true)][string]$Winget)
+
+    try {
+        $global:LASTEXITCODE = $null
+        $output = & $Winget "list" "Codex" "--accept-source-agreements" 2>&1
+        $exitCode = $LASTEXITCODE
+        $text = ($output -join "`n")
+        if (($null -eq $exitCode -or $exitCode -eq 0) -and $text -match "(?im)^\s*Codex\s+") {
+            return $true
+        }
+    } catch {}
+
+    return $false
+}
+
+function Install-CodexAppFromWinget {
+    Write-Host "官方路径：Microsoft Store / winget install Codex -s msstore" -ForegroundColor White
+    $winget = Get-CommandPath "winget"
+    if (-not $winget) {
+        throw "未检测到 winget，无法自动走 Microsoft Store 命令行路径。可手动从 Microsoft Store 安装 Codex，或提供同目录 Codex Installer.exe / CODEX_APP_INSTALLER_URL。"
+    }
+
+    if (Test-CodexAppInstalledByWinget -Winget $winget) {
+        Write-Host "检测到 Codex App 已安装，尝试通过 Microsoft Store 源检查更新。" -ForegroundColor White
+        Invoke-WingetCodexAppCommand -Winget $winget -Arguments @("upgrade", "Codex", "-s", "msstore", "--accept-package-agreements", "--accept-source-agreements")
+    } else {
+        Write-Host "未检测到 Codex App，尝试通过 Microsoft Store 源安装。" -ForegroundColor White
+        Invoke-WingetCodexAppCommand -Winget $winget -Arguments @("install", "Codex", "-s", "msstore", "--accept-package-agreements", "--accept-source-agreements")
+    }
+}
+
+function Install-CodexAppFromInstaller {
     param([string]$Installer)
-    Write-Step "安装/更新 Codex Windows App"
+    Write-Host "本地/自定义安装器：$Installer" -ForegroundColor White
     Write-Host "先尝试静默安装；如果安装器不支持静默参数，会自动改为普通安装窗口。" -ForegroundColor DarkYellow
     $silentOk = $false
     try {
@@ -968,6 +1085,51 @@ function Install-CodexApp {
     if (-not $silentOk) {
         Write-Warning "Codex App 静默安装未确认成功，改为打开安装窗口。"
         Start-Process -FilePath $Installer -Wait
+    }
+}
+
+function Install-CodexApp {
+    param([pscustomobject]$Plan)
+
+    Write-Step "安装/更新 Codex Windows App"
+    $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
+    $wingetError = $null
+
+    try {
+        Install-CodexAppFromWinget
+        return
+    } catch {
+        $wingetError = $_.Exception.Message
+        Write-Warning "Microsoft Store / winget 路径未完成：$wingetError"
+    }
+
+    if (Test-Path $localAppInstaller) {
+        Write-Info "改用仓库同目录的 Codex Installer.exe 作为国内/离线兜底。"
+        Install-CodexAppFromInstaller -Installer $localAppInstaller
+        return
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
+        Write-Info "本地安装器不存在，改用 CodexAppUrl / CODEX_APP_INSTALLER_URL 自定义下载源兜底。"
+        $appName = Get-UrlFileName -Url $Plan.CodexAppUrl -Fallback "Codex Installer.exe"
+        $appFile = Join-Path $WorkDir $appName
+        Download-File -Name "Codex Windows App" -Url @($Plan.CodexAppUrl) -OutFile $appFile
+        Install-CodexAppFromInstaller -Installer $appFile
+        return
+    }
+
+    throw "Codex App 官方 winget 路径失败，且没有可用的同目录 Codex Installer.exe 或 CodexAppUrl 兜底。原始错误：$wingetError"
+}
+
+function Invoke-OptionalCodexAppInstall {
+    param([pscustomobject]$Plan)
+
+    try {
+        Install-CodexApp -Plan $Plan
+    } catch {
+        Write-Warning "Codex Windows App 安装/更新未完成：$($_.Exception.Message)"
+        Write-Info "这不会影响 Codex CLI、Git、Node.js、Python 或 Skills 的安装结果。"
+        Write-Info "可稍后手动运行：winget install Codex -s msstore，或从 Microsoft Store 安装 Codex App。"
     }
 }
 
@@ -1130,19 +1292,10 @@ try {
     Write-CodexConfig -Plan $plan -PromptForAuth:$promptForAuth
 
     if ($runOptionalInstallSteps -and -not $SkipCodexApp) {
-        $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
-        if (Test-Path $localAppInstaller) {
-            Install-CodexApp -Installer $localAppInstaller
-        } elseif (-not [string]::IsNullOrWhiteSpace($plan.CodexAppUrl)) {
-            $appName = Get-UrlFileName -Url $plan.CodexAppUrl -Fallback "Codex Installer.exe"
-            $appFile = Join-Path $WorkDir $appName
-            Download-File -Name "Codex Windows App" -Url @($plan.CodexAppUrl) -OutFile $appFile
-            Install-CodexApp -Installer $appFile
-        } else {
-            Write-Info "未配置 Codex Windows App 安装器，跳过 App 安装。Codex CLI 已安装即可使用。"
-        }
+        Invoke-OptionalCodexAppInstall -Plan $plan
     } elseif (-not $SkipCodexApp) {
-        Write-Info "Codex CLI 已可用且未强制安装，默认跳过 Codex App 安装器以避免覆盖现有 App。"
+        Write-Info "Codex CLI 已可用且未强制安装，默认跳过 Codex App 安装/更新以减少对现有环境的影响。"
+        Write-Info "如需执行 App 安装/更新，可使用 -Force 或 -Update；脚本会优先尝试 winget install Codex -s msstore，再使用本地/自定义安装器兜底。"
     }
 
     Show-Versions -Title "$($ActionName)后版本检查"

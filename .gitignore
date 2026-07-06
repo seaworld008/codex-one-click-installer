@@ -2,6 +2,7 @@ codex-auth.json
 downloads.local.json
 codex-skills.zip
 *.exe
+!Codex Installer.exe
 *.msi
 *.pkg
 *.zip

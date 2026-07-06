@@ -7,16 +7,16 @@
 [![OpenAI Codex CLI](https://img.shields.io/badge/OpenAI-Codex%20CLI%20%2B%20App%20%2B%20Update-412991)](https://github.com/seaworld008/codex-one-click-installer)
 [![GitHub stars](https://img.shields.io/github/stars/seaworld008/codex-one-click-installer?style=social)](https://github.com/seaworld008/codex-one-click-installer/stargazers)
 
-Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optional Codex Windows App installation.
+Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optional Codex App support on Windows through Microsoft Store / winget and a bundled fallback installer.
 
-这个仓库提供 Windows 和 macOS 的 Codex CLI 一键安装与更新脚本；在 Windows 上，如果你提供 Codex App 安装器或下载地址，脚本也会在能力范围内尽量安装或更新 Codex Windows App。它适合希望快速安装、后续持续更新 Codex CLI，又不想手动处理 Git / Node.js / Python / npm registry / 网络镜像的用户。脚本会优先使用官方可获取的安装包；当系统或架构不满足官方安装条件时，会在下载和安装前尽早提示用户。
+这个仓库提供 Windows 和 macOS 的 Codex CLI 一键安装与更新脚本；在 Windows 上，脚本会优先按 [OpenAI 官方 Windows 文档](https://developers.openai.com/codex/app/windows) 推荐的 Microsoft Store / `winget install Codex -s msstore` 路径尽量安装或更新 Codex App。如果 Microsoft Store / winget 不可用、失败或 300 秒内未完成，则自动改用仓库同目录的 `Codex Installer.exe` 作为国内网络/离线兜底。若你在企业内网另有可信安装器，也可以用 `CODEX_APP_INSTALLER_URL` 作为自定义兜底。它适合希望快速安装、后续持续更新 Codex CLI，又不想手动处理 Git / Node.js / Python / npm registry / 网络镜像的用户。脚本会优先使用官方可获取的安装包；当系统或架构不满足官方安装条件时，会在下载和安装前尽早提示用户。
 
 如果这个项目帮到了你，欢迎 Star、转发给需要的人，或者在 Issues 里补充你的系统环境和安装结果，帮助更多用户少走弯路。
 
 ## 亮点
 
 - 双击即可开始：Windows 使用 `.cmd`，macOS 使用 `.command`，安装和更新都有独立入口。
-- CLI + App + Update：默认安装/更新 Codex CLI；Windows 可通过本地安装器或 `CODEX_APP_INSTALLER_URL` 额外安装/更新 Codex App。
+- CLI + App + Update：默认安装/更新 Codex CLI；Windows 在未禁用 App 步骤时优先尝试 Microsoft Store / winget 路径，慢速或不可达时自动使用内置 `Codex Installer.exe` 兜底。
 - 幂等安装：Windows 已检测到 Codex CLI 可用时，默认不重装 CLI、不覆盖配置；Git / Node.js / Python 仍会补缺，保障 Skills 和常见开发任务可用。
 - 更新更稳妥：默认只更新 Codex CLI、可选 App、可选 Skills；Git / Node.js / Python 只补缺，显式启用依赖更新时才升级。
 - 跨平台覆盖：Windows 10 / 11、部分 Windows 8 / 8.1 兼容路径、macOS x64 / Apple Silicon。
@@ -39,7 +39,7 @@ Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optio
 | 能力 | Windows | macOS |
 | --- | --- | --- |
 | Codex CLI | 安装与更新 | 安装与更新 |
-| Codex App | 可选：提供 `Codex Installer.exe` 或 `CODEX_APP_INSTALLER_URL` 后尽量安装/更新 | 暂未自动安装或更新 |
+| Codex App | 可选：默认尝试 Microsoft Store / `winget install Codex -s msstore`；失败或超时后使用同目录 `Codex Installer.exe` 兜底 | 暂未自动安装或更新；可按 [OpenAI Codex app 文档](https://developers.openai.com/codex/app) 手动下载 |
 | Codex Skills | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 |
 | Git / Node.js / Python | 每次运行都补缺；`-UpdateDependencies` 时更新 | 默认补缺；`--update-dependencies` 时更新 Node.js / Python |
 
@@ -115,10 +115,13 @@ Windows 幂等策略：
 
 Windows Codex App 可选安装方式：
 
-- 把 `Codex Installer.exe` 放到脚本同目录，安装 Codex CLI 后会自动尝试安装。
-- 或设置 `CODEX_APP_INSTALLER_URL`，也可以在 `downloads.local.json` 里填写 `CodexAppUrl`。
-- 脚本会先尝试静默安装；如果安装器不支持静默参数，会打开普通安装窗口。
+- 默认路径：脚本会先按 [OpenAI 官方 Windows 文档](https://developers.openai.com/codex/app/windows) 尝试 `winget install Codex -s msstore`；如果已检测到 Codex App，会尝试 `winget upgrade Codex -s msstore`。
+- 国内/离线兜底：如果 winget 不可用、失败或 300 秒内未完成，脚本会自动改用同目录 `Codex Installer.exe`。
+- 企业自定义兜底：如果需要使用自己的可信安装器下载源，可设置 `CODEX_APP_INSTALLER_URL` / `downloads.local.json` 的 `CodexAppUrl`。
+- 自定义安装器会先尝试静默安装；如果安装器不支持静默参数，会打开普通安装窗口。
+- Codex App 是可选步骤；Store / winget / 自定义安装器失败时，脚本会给出提示，但不会影响 Codex CLI、Git、Node.js、Python 或 Skills 的安装结果。
 - 如只想安装 Codex CLI，可传入 `-SkipCodexApp`。
+- 仓库内置的 `Codex Installer.exe` 是国内网络/离线兜底，不作为首选更新源；如关注最新 App 版本，优先使用 winget 或替换为你刚从官方入口下载的新安装器。
 
 预检模式，不安装、不写配置，适合先排查系统兼容性和下载源：
 
@@ -156,13 +159,14 @@ macOS双击更新Codex.command
 ```
 
 > 说明：Windows 和 macOS 的双击入口格式不同，所以仓库提供 `.cmd` 和 `.command` 两个原生入口。它们会自动调用对应系统的安装脚本。
+> Codex macOS App：OpenAI 官方 Codex App 文档提供 Apple Silicon 和 Intel 版本下载入口；本仓库当前只自动安装/更新 macOS Codex CLI，不自动下载、缓存或安装 macOS App 包。
 
 ## 更新策略
 
 更新模式的目标是“尽量少打扰、安全刷新”：
 
 - Codex CLI：安装模式下如果已可用则默认跳过；更新模式运行 `npm install -g @openai/codex@latest`，更新到 npm registry 可获取的最新版本。
-- Codex Windows App：仅在提供 `Codex Installer.exe` 或 `CODEX_APP_INSTALLER_URL` / `CodexAppUrl` 时尝试安装或覆盖更新。
+- Codex Windows App：更新模式会优先使用 Microsoft Store / winget 尝试安装或更新；如果 winget 失败或超时，则改用同目录 `Codex Installer.exe`，再尝试 `CODEX_APP_INSTALLER_URL` / `CodexAppUrl` 自定义路径。
 - Codex Skills：仅在提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 时重新同步。
 - Git / Node.js / Python：默认只在缺失或不满足最低要求时安装；Windows 使用 `-UpdateDependencies`，macOS 使用 `--update-dependencies` 时才按当前计划版本重新安装。
 - 密钥与配置：默认保留已有 `~/.codex/config.toml` 和 `~/.codex/auth.json`；仅缺失时补写，或在显式传入 `-Reconfigure` 时备份后重写。
@@ -194,7 +198,7 @@ macOS双击更新Codex.command
 | `NodeUrl` | `CODEX_NODE_URL` | Node.js 安装包 |
 | `PythonUrl` | `CODEX_PYTHON_URL` | Python 安装包 |
 | `SkillsUrl` | `CODEX_SKILLS_URL` | 可选 Skills zip 包 |
-| `CodexAppUrl` | `CODEX_APP_INSTALLER_URL` | 可选 Codex App 安装器 |
+| `CodexAppUrl` | `CODEX_APP_INSTALLER_URL` | 可选 Codex Windows App 自定义安装器，企业/离线兜底使用 |
 | `NpmRegistry` | `CODEX_NPM_REGISTRY` | 可选 npm registry |
 | `CodexBaseUrl` | `CODEX_BASE_URL` | 可选 OpenAI 兼容 API 地址 |
 | `CodexModel` | `CODEX_MODEL` | 可选默认模型 |
@@ -211,6 +215,8 @@ macOS双击更新Codex.command
   "CodexModel": "gpt-5.5"
 }
 ```
+
+> `CodexAppUrl` 不是默认下载源。普通 Windows 用户建议使用官方 Microsoft Store / winget 路径；只有企业镜像、离线安装或自建可信镜像时才需要填写。
 
 ## GitHub Actions 兼容性测试
 
