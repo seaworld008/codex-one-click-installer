@@ -17,6 +17,7 @@ Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optio
 
 - 双击即可开始：Windows 使用 `.cmd`，macOS 使用 `.command`，安装和更新都有独立入口。
 - CLI + App + Update：默认安装/更新 Codex CLI；Windows 可通过本地安装器或 `CODEX_APP_INSTALLER_URL` 额外安装/更新 Codex App。
+- 幂等安装：Windows 已检测到 Codex CLI 可用时，默认不重装 CLI、不覆盖配置；Git / Node.js / Python 仍会补缺，保障 Skills 和常见开发任务可用。
 - 更新更稳妥：默认只更新 Codex CLI、可选 App、可选 Skills；Git / Node.js / Python 只补缺，显式启用依赖更新时才升级。
 - 跨平台覆盖：Windows 10 / 11、部分 Windows 8 / 8.1 兼容路径、macOS x64 / Apple Silicon。
 - 国内网络友好：默认使用 `npmmirror.com` 和 `registry.npmmirror.com`，失败时回退官方源。
@@ -40,7 +41,7 @@ Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optio
 | Codex CLI | 安装与更新 | 安装与更新 |
 | Codex App | 可选：提供 `Codex Installer.exe` 或 `CODEX_APP_INSTALLER_URL` 后尽量安装/更新 | 暂未自动安装或更新 |
 | Codex Skills | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 |
-| Git / Node.js / Python | 默认补缺；`-UpdateDependencies` 时更新 | 默认补缺；`--update-dependencies` 时更新 Node.js / Python |
+| Git / Node.js / Python | 每次运行都补缺；`-UpdateDependencies` 时更新 | 默认补缺；`--update-dependencies` 时更新 Node.js / Python |
 
 安装完成后，重新打开终端或 PowerShell：
 
@@ -99,7 +100,18 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -Upd
 ```powershell
 .\install-codex.ps1 -SkipGit -SkipPython -SkipSkills -SkipCodexApp
 .\install-codex.ps1 -Update -UpdateDependencies
+.\install-codex.ps1 -Force
+.\install-codex.ps1 -Reconfigure
+.\install-codex.ps1 -SkipConfig
 ```
+
+Windows 幂等策略：
+
+- 如果 `codex --version` 已成功返回，安装模式会提示是否强制重装 Codex CLI；默认回答为否，非交互模式也会跳过 CLI 重装。
+- 即使 Codex CLI 已可用，Git / Node.js / Python 仍会按“缺失才安装”的方式检查并补齐，方便 Skills、Git 工作流和本地脚本使用。
+- 已有 `~/.codex/config.toml` 和 `~/.codex/auth.json` 默认保留，不会被安装/更新覆盖。
+- 使用 `-Force` 可强制重装 Codex CLI 以及已配置的可选 App/Skills；使用 `-Reconfigure` 才会备份后重写 Codex 配置/认证文件。
+- 如果配置写入后后续步骤失败，脚本会自动还原本次修改过的 `config.toml` / `auth.json`；成功时备份会保留在 `~/.codex/backups/installer-...`。
 
 Windows Codex App 可选安装方式：
 
@@ -149,21 +161,21 @@ macOS双击更新Codex.command
 
 更新模式的目标是“尽量少打扰、安全刷新”：
 
-- Codex CLI：运行 `npm install -g @openai/codex@latest`，更新到 npm registry 可获取的最新版本。
+- Codex CLI：安装模式下如果已可用则默认跳过；更新模式运行 `npm install -g @openai/codex@latest`，更新到 npm registry 可获取的最新版本。
 - Codex Windows App：仅在提供 `Codex Installer.exe` 或 `CODEX_APP_INSTALLER_URL` / `CodexAppUrl` 时尝试安装或覆盖更新。
 - Codex Skills：仅在提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 时重新同步。
 - Git / Node.js / Python：默认只在缺失或不满足最低要求时安装；Windows 使用 `-UpdateDependencies`，macOS 使用 `--update-dependencies` 时才按当前计划版本重新安装。
-- 密钥与配置：更新时会备份 `~/.codex/config.toml`；不会追问或覆盖已有 `auth.json`，除非你在脚本同目录显式提供 `codex-auth.json`。
+- 密钥与配置：默认保留已有 `~/.codex/config.toml` 和 `~/.codex/auth.json`；仅缺失时补写，或在显式传入 `-Reconfigure` 时备份后重写。
 
 ## 密钥配置
 
-脚本会在安装过程中提示输入 `OPENAI_API_KEY`。也可以在脚本同目录创建 `codex-auth.json`：
+首次安装且未检测到 `auth.json` 时，脚本会提示输入 `OPENAI_API_KEY`。也可以在脚本同目录创建 `codex-auth.json`：
 
 ```json
 {"OPENAI_API_KEY":"YOUR_OPENAI_API_KEY"}
 ```
 
-`codex-auth.json` 已加入 `.gitignore`，不要提交真实密钥。
+如果已有 `auth.json`，脚本默认不会用同目录 `codex-auth.json` 覆盖；需要覆盖时请显式传入 `-Reconfigure`。`codex-auth.json` 已加入 `.gitignore`，不要提交真实密钥。
 
 ## 私有下载源与域名去敏
 

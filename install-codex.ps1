@@ -13,6 +13,9 @@ param(
     [switch]$VerifyDownloads,
     [switch]$NoPause,
     [switch]$NonInteractive,
+    [switch]$Force,
+    [switch]$Reconfigure,
+    [switch]$SkipConfig,
     [switch]$UseLatestDependencies,
     [string]$DownloadMirror = "",
     [string]$TestWindowsVersion = "",
@@ -24,6 +27,8 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $ActionName = $(if ($Update) { "更新" } else { "安装" })
 $ActionPlanName = $(if ($Update) { "安装/更新" } else { "安装" })
+$RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$ConfigRestorePlan = New-Object System.Collections.Generic.List[object]
 
 # ========== 公开官方版本配置 ==========
 # 默认走“兼容优先”版本。Codex CLI 当前只要求 Node.js >= 16，
@@ -66,6 +71,21 @@ function Write-Info {
     Write-Host $Message -ForegroundColor DarkCyan
 }
 
+function Confirm-Action {
+    param(
+        [string]$Message,
+        [bool]$Default = $false
+    )
+
+    if ($NonInteractive) { return $Default }
+
+    $suffix = $(if ($Default) { "[Y/n]" } else { "[y/N]" })
+    $answer = Read-Host "$Message $suffix"
+    if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
+
+    return ($answer.Trim() -match "^(y|yes|true|1|是|确认|確定)$")
+}
+
 function Test-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -91,6 +111,9 @@ function Invoke-SelfElevate {
         if ($VerifyDownloads) { $args += " -VerifyDownloads" }
         if ($NoPause) { $args += " -NoPause" }
         if ($NonInteractive) { $args += " -NonInteractive" }
+        if ($Force) { $args += " -Force" }
+        if ($Reconfigure) { $args += " -Reconfigure" }
+        if ($SkipConfig) { $args += " -SkipConfig" }
         if ($UseLatestDependencies) { $args += " -UseLatestDependencies" }
         if (-not [string]::IsNullOrWhiteSpace($DownloadMirror)) { $args += " -DownloadMirror `"$DownloadMirror`"" }
 
@@ -391,6 +414,16 @@ function Write-PlanSummary {
             Write-Host "依赖策略：默认只补缺，不强制升级 Git / Node.js / Python" -ForegroundColor White
         }
     }
+    if ($Force) {
+        Write-Host "强制安装：已启用，将跳过“已安装可用则不重装”的保护" -ForegroundColor DarkYellow
+    }
+    if ($Reconfigure) {
+        Write-Host "配置策略：已启用 -Reconfigure，会备份后重写 Codex 配置/认证文件" -ForegroundColor DarkYellow
+    } elseif ($SkipConfig) {
+        Write-Host "配置策略：已启用 -SkipConfig，不写入 Codex 配置/认证文件" -ForegroundColor DarkYellow
+    } else {
+        Write-Host "配置策略：默认保留已有 config.toml / auth.json，只在缺失时补写" -ForegroundColor White
+    }
     Write-Host "下载源模式：$($Plan.DownloadMirror)" -ForegroundColor White
     Write-Host "Git 安装包：$($Plan.GitFile)" -ForegroundColor White
     foreach ($url in @($Plan.GitUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
@@ -544,6 +577,38 @@ function Get-InstalledVersion {
     return $null
 }
 
+function Get-CodexStatus {
+    Refresh-Path
+    $cmd = Get-CommandPath "codex"
+    $status = [ordered]@{
+        IsInstalled = $false
+        IsUsable = $false
+        Path = $cmd
+        VersionText = ""
+        Error = ""
+    }
+
+    if (-not $cmd) { return [pscustomobject]$status }
+
+    $status.IsInstalled = $true
+    try {
+        $global:LASTEXITCODE = $null
+        $out = & $cmd "--version" 2>&1
+        $exitCode = $LASTEXITCODE
+        $text = ($out -join " ").Trim()
+        $status.VersionText = $text
+        if (($null -eq $exitCode -or $exitCode -eq 0) -and -not [string]::IsNullOrWhiteSpace($text)) {
+            $status.IsUsable = $true
+        } elseif ($null -ne $exitCode -and $exitCode -ne 0) {
+            $status.Error = "ExitCode=$exitCode $text"
+        }
+    } catch {
+        $status.Error = $_.Exception.Message
+    }
+
+    return [pscustomobject]$status
+}
+
 function Test-NodeReady {
     $ver = Get-InstalledVersion -Command "node" -Arguments "-v"
     if ($ver -and $ver.Major -ge 16) { return $true }
@@ -642,6 +707,69 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Get-SafeBackupName {
+    param([string]$Path)
+    return (($Path -replace "^[A-Za-z]:", "") -replace '[\\/:*?"<>|]', "_").Trim("_")
+}
+
+function Save-FileForRestore {
+    param([string]$Path)
+
+    foreach ($entry in $ConfigRestorePlan) {
+        if ($entry.Path -eq $Path) { return }
+    }
+
+    $parent = Split-Path -Parent $Path
+    if ([string]::IsNullOrWhiteSpace($parent)) { return }
+
+    $backupRoot = Join-Path $parent (Join-Path "backups" "installer-$RunStamp")
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+
+    $exists = Test-Path $Path
+    $backupPath = Join-Path $backupRoot (Get-SafeBackupName -Path $Path)
+    if ($exists) {
+        Copy-Item -Path $Path -Destination $backupPath -Force
+    }
+
+    $ConfigRestorePlan.Add([pscustomobject]@{
+        Path = $Path
+        BackupPath = $backupPath
+        Existed = $exists
+    }) | Out-Null
+}
+
+function Restore-SavedFiles {
+    if ($ConfigRestorePlan.Count -eq 0) { return }
+
+    Write-Warning "检测到安装流程失败，正在还原本次修改过的 Codex 配置文件..."
+    for ($i = $ConfigRestorePlan.Count - 1; $i -ge 0; $i--) {
+        $entry = $ConfigRestorePlan[$i]
+        try {
+            if ($entry.Existed) {
+                Copy-Item -Path $entry.BackupPath -Destination $entry.Path -Force
+                Write-Host "已还原：$($entry.Path)" -ForegroundColor DarkYellow
+            } else {
+                Remove-Item -Force $entry.Path -ErrorAction SilentlyContinue
+                Write-Host "已移除本次新建文件：$($entry.Path)" -ForegroundColor DarkYellow
+            }
+        } catch {
+            Write-Warning "还原失败：$($entry.Path)。详细错误：$($_.Exception.Message)"
+        }
+    }
+}
+
+function Complete-SavedFiles {
+    if ($ConfigRestorePlan.Count -eq 0) { return }
+
+    $backupRoots = @($ConfigRestorePlan | ForEach-Object { Split-Path -Parent $_.BackupPath } | Sort-Object -Unique)
+    foreach ($root in $backupRoots) {
+        if (-not [string]::IsNullOrWhiteSpace($root)) {
+            Write-Host "本次配置备份保留在：$root" -ForegroundColor DarkGray
+        }
+    }
+    $ConfigRestorePlan.Clear()
+}
+
 function Expand-ZipFile {
     param([string]$ZipFile, [string]$Destination)
 
@@ -683,9 +811,17 @@ function Install-Skills {
 }
 
 function Write-CodexConfig {
-    param([pscustomobject]$Plan)
+    param(
+        [pscustomobject]$Plan,
+        [bool]$PromptForAuth = $true
+    )
 
     Write-Step "写入 Codex 配置"
+    if ($SkipConfig) {
+        Write-Info "已启用 -SkipConfig，跳过 Codex 配置写入。"
+        return
+    }
+
     $codexHome = Join-Path $HOME ".codex"
     New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
     $configPath = Join-Path $codexHome "config.toml"
@@ -693,37 +829,51 @@ function Write-CodexConfig {
     $localAuthJson = Join-Path $ScriptDir "codex-auth.json"
 
     if (Test-Path $configPath) {
-        $backup = Join-Path $codexHome ("config.toml.bak-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-        Copy-Item -Path $configPath -Destination $backup -Force
-        Write-Host "已备份旧配置：$backup" -ForegroundColor DarkYellow
+        if ($Reconfigure) {
+            Save-FileForRestore -Path $configPath
+            Write-Host "检测到已有 config.toml，-Reconfigure 已启用，将备份后重写。" -ForegroundColor DarkYellow
+        } else {
+            Write-Host "检测到已有 config.toml，默认保留，不重写：$configPath" -ForegroundColor DarkYellow
+            Write-Host "如需重新生成配置，请显式传入 -Reconfigure。" -ForegroundColor DarkGray
+        }
+    } else {
+        Save-FileForRestore -Path $configPath
     }
 
-    $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add('disable_response_storage = true')
-    $lines.Add('network_access = "enabled"')
-    $lines.Add('windows_wsl_setup_acknowledged = true')
+    if ((-not (Test-Path $configPath)) -or $Reconfigure) {
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add('disable_response_storage = true')
+        $lines.Add('network_access = "enabled"')
+        $lines.Add('windows_wsl_setup_acknowledged = true')
 
-    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexModel)) {
-        $safeModel = $Plan.CodexModel.Replace('"', '\"')
-        $lines.Add(('model = "{0}"' -f $safeModel))
+        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexModel)) {
+            $safeModel = $Plan.CodexModel.Replace('"', '\"')
+            $lines.Add(('model = "{0}"' -f $safeModel))
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexBaseUrl)) {
+            $safeUrl = $Plan.CodexBaseUrl.Replace('"', '\"')
+            $lines.Add("")
+            $lines.Add("[model_providers.OpenAI]")
+            $lines.Add('name = "OpenAI"')
+            $lines.Add(('base_url = "{0}"' -f $safeUrl))
+            $lines.Add('wire_api = "responses"')
+            $lines.Add('requires_openai_auth = true')
+        }
+
+        Write-Utf8NoBom -Path $configPath -Content (($lines -join "`r`n") + "`r`n")
+        Write-Host "已写入：$configPath" -ForegroundColor Green
     }
-
-    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexBaseUrl)) {
-        $safeUrl = $Plan.CodexBaseUrl.Replace('"', '\"')
-        $lines.Add("")
-        $lines.Add("[model_providers.OpenAI]")
-        $lines.Add('name = "OpenAI"')
-        $lines.Add(('base_url = "{0}"' -f $safeUrl))
-        $lines.Add('wire_api = "responses"')
-        $lines.Add('requires_openai_auth = true')
-    }
-
-    Write-Utf8NoBom -Path $configPath -Content (($lines -join "`r`n") + "`r`n")
-    Write-Host "已写入：$configPath" -ForegroundColor Green
 
     if (Test-Path $localAuthJson) {
-        Copy-Item -Path $localAuthJson -Destination $authPath -Force
-        Write-Host "已从脚本同目录 codex-auth.json 写入认证文件：$authPath" -ForegroundColor Green
+        if ((Test-Path $authPath) -and -not $Reconfigure) {
+            Write-Host "检测到已有 auth.json，默认不使用同目录 codex-auth.json 覆盖：$authPath" -ForegroundColor DarkYellow
+            Write-Host "如需覆盖认证文件，请显式传入 -Reconfigure。" -ForegroundColor DarkGray
+        } else {
+            Save-FileForRestore -Path $authPath
+            Copy-Item -Path $localAuthJson -Destination $authPath -Force
+            Write-Host "已从脚本同目录 codex-auth.json 写入认证文件：$authPath" -ForegroundColor Green
+        }
     } elseif ($Update) {
         if (Test-Path $authPath) {
             Write-Host "更新模式：保留已有认证文件：$authPath" -ForegroundColor DarkYellow
@@ -736,16 +886,23 @@ function Write-CodexConfig {
         } else {
             Write-Host "非交互模式：未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。" -ForegroundColor DarkYellow
         }
+    } elseif ((Test-Path $authPath) -and -not $Reconfigure) {
+        Write-Host "检测到已有 auth.json，默认保留，不追问、不覆盖：$authPath" -ForegroundColor DarkYellow
     } else {
         Write-Host ""
-        Write-Host "请输入 OPENAI_API_KEY。直接回车则跳过，不覆盖已有 auth.json。" -ForegroundColor Yellow
-        $apiKey = Read-Host "OPENAI_API_KEY"
-        if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
-            $auth = @{ OPENAI_API_KEY = $apiKey.Trim() } | ConvertTo-Json -Compress
-            Write-Utf8NoBom -Path $authPath -Content $auth
-            Write-Host "已写入：$authPath" -ForegroundColor Green
-        } elseif (Test-Path $authPath) {
-            Write-Host "保留已有认证文件：$authPath" -ForegroundColor DarkYellow
+        if ($PromptForAuth) {
+            Write-Host "请输入 OPENAI_API_KEY。直接回车则跳过，不覆盖已有 auth.json。" -ForegroundColor Yellow
+            $apiKey = Read-Host "OPENAI_API_KEY"
+            if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
+                Save-FileForRestore -Path $authPath
+                $auth = @{ OPENAI_API_KEY = $apiKey.Trim() } | ConvertTo-Json -Compress
+                Write-Utf8NoBom -Path $authPath -Content $auth
+                Write-Host "已写入：$authPath" -ForegroundColor Green
+            } elseif (Test-Path $authPath) {
+                Write-Host "保留已有认证文件：$authPath" -ForegroundColor DarkYellow
+            } else {
+                Write-Warning "未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。"
+            }
         } else {
             Write-Warning "未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。"
         }
@@ -862,6 +1019,33 @@ try {
     Write-Host "安装路径：$($mode.DisplayName)" -ForegroundColor White
     Invoke-EnvironmentPreflight -OsInfo $osInfo -Arch $arch -Mode $mode
     Write-PlanSummary -Plan $plan
+
+    $codexBefore = Get-CodexStatus
+    $runCodexCliInstall = $true
+    $runOptionalInstallSteps = $true
+    $forceInstall = [bool]$Force
+
+    if ($codexBefore.IsUsable) {
+        Write-Host "Codex CLI：已安装可用，$($codexBefore.VersionText)" -ForegroundColor Green
+        Write-Host "Codex 路径：$($codexBefore.Path)" -ForegroundColor DarkGray
+    } elseif ($codexBefore.IsInstalled) {
+        Write-Warning "检测到 codex 命令，但 codex --version 未正常返回：$($codexBefore.Error)"
+    } else {
+        Write-Host "Codex CLI：未检测到" -ForegroundColor Yellow
+    }
+
+    if (-not $Update -and $codexBefore.IsUsable -and -not $forceInstall) {
+        $forceInstall = Confirm-Action -Message "检测到 Codex CLI 已经可用。基础依赖仍会补缺；是否强制重新安装 Codex CLI 及可选 App/Skills？" -Default $false
+        if (-not $forceInstall) {
+            $runCodexCliInstall = $false
+            $runOptionalInstallSteps = $false
+        }
+    }
+
+    if ($forceInstall) {
+        Write-Warning "已选择强制安装：将重新执行 Codex CLI 安装/更新，以及已配置的 Skills/App 安装；Git/Node/Python 仍会先做补缺检查，除非使用 -UpdateDependencies 才升级已有依赖。"
+    }
+
     if ($Update) {
         Show-Versions -Title "更新前版本"
     }
@@ -916,25 +1100,36 @@ try {
     }
 
     Refresh-Path
-    Install-CodexCli -Plan $plan
-
-    if (-not $SkipSkills) {
-        $localSkillsZip = Join-Path $ScriptDir "codex-skills.zip"
-        if (Test-Path $localSkillsZip) {
-            Install-Skills -ZipFile $localSkillsZip
-        } elseif (-not [string]::IsNullOrWhiteSpace($plan.SkillsUrl)) {
-            $skillsName = Get-UrlFileName -Url $plan.SkillsUrl -Fallback "codex-skills.zip"
-            $skillsFile = Join-Path $WorkDir $skillsName
-            Download-File -Name "Codex Skills" -Url @($plan.SkillsUrl) -OutFile $skillsFile
-            Install-Skills -ZipFile $skillsFile
-        } else {
-            Write-Info "未配置 Skills 包，跳过 Skills 安装。可使用 CODEX_SKILLS_URL 或同目录 codex-skills.zip 启用。"
-        }
+    if ($runCodexCliInstall) {
+        Install-CodexCli -Plan $plan
+    } else {
+        Write-Step "幂等跳过 Codex CLI"
+        Write-Info "Codex CLI 已可用，未重复执行 npm install -g @openai/codex@latest。"
+        Write-Info "如需强制重新安装 Codex CLI，请使用 -Force。"
     }
 
-    Write-CodexConfig -Plan $plan
+    if ($runOptionalInstallSteps) {
+        if (-not $SkipSkills) {
+            $localSkillsZip = Join-Path $ScriptDir "codex-skills.zip"
+            if (Test-Path $localSkillsZip) {
+                Install-Skills -ZipFile $localSkillsZip
+            } elseif (-not [string]::IsNullOrWhiteSpace($plan.SkillsUrl)) {
+                $skillsName = Get-UrlFileName -Url $plan.SkillsUrl -Fallback "codex-skills.zip"
+                $skillsFile = Join-Path $WorkDir $skillsName
+                Download-File -Name "Codex Skills" -Url @($plan.SkillsUrl) -OutFile $skillsFile
+                Install-Skills -ZipFile $skillsFile
+            } else {
+                Write-Info "未配置 Skills 包，跳过 Skills 安装。可使用 CODEX_SKILLS_URL 或同目录 codex-skills.zip 启用。"
+            }
+        }
+    } elseif (-not $SkipSkills) {
+        Write-Info "Codex CLI 已可用且未强制安装，默认跳过可选 Skills 同步以避免覆盖现有 Skills。"
+    }
 
-    if (-not $SkipCodexApp) {
+    $promptForAuth = (-not $Update) -and ($runCodexCliInstall -or $Reconfigure)
+    Write-CodexConfig -Plan $plan -PromptForAuth:$promptForAuth
+
+    if ($runOptionalInstallSteps -and -not $SkipCodexApp) {
         $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
         if (Test-Path $localAppInstaller) {
             Install-CodexApp -Installer $localAppInstaller
@@ -946,9 +1141,12 @@ try {
         } else {
             Write-Info "未配置 Codex Windows App 安装器，跳过 App 安装。Codex CLI 已安装即可使用。"
         }
+    } elseif (-not $SkipCodexApp) {
+        Write-Info "Codex CLI 已可用且未强制安装，默认跳过 Codex App 安装器以避免覆盖现有 App。"
     }
 
     Show-Versions -Title "$($ActionName)后版本检查"
+    Complete-SavedFiles
 
     Write-Host ""
     Write-Host "$($ActionName)完成。建议重新打开一个 PowerShell 窗口，然后执行：" -ForegroundColor Green
@@ -957,6 +1155,7 @@ try {
     Write-Host ""
     Write-Host "日志位置：$LogFile" -ForegroundColor DarkGray
 } catch {
+    Restore-SavedFiles
     Write-Host ""
     Write-Host "$($ActionName)失败：$($_.Exception.Message)" -ForegroundColor Red
     Write-Host "日志位置：$LogFile" -ForegroundColor Yellow
