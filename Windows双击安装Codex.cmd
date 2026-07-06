@@ -1,7 +1,6 @@
-﻿@echo off
-chcp 65001 >nul
+@echo off
 setlocal
-title Codex 一键安装
+title Codex Installer
 
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_FILE=%SCRIPT_DIR%install-codex.ps1"
@@ -12,21 +11,21 @@ if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" (
 
 echo.
 echo ========================================
-echo   Codex Windows 一键安装
+echo   Codex Windows Installer
 echo ========================================
 echo.
 
 if not exist "%SCRIPT_FILE%" (
-  echo 未找到安装脚本：
+  echo install-codex.ps1 was not found:
   echo %SCRIPT_FILE%
   echo.
-  echo 请确认本文件和 install-codex.ps1 在同一个解压目录中。
+  echo Make sure this file and install-codex.ps1 are in the same extracted folder.
   goto :end
 )
 
 if not exist "%POWERSHELL_EXE%" (
-  echo 未找到 powershell.exe，无法继续自动安装。
-  echo 请确认当前系统为 Windows 8/8.1/10/11。
+  echo powershell.exe was not found. Cannot continue.
+  echo Please run this on Windows 8/8.1/10/11.
   goto :end
 )
 
