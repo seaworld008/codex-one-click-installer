@@ -156,7 +156,11 @@ macOS双击更新Codex.command
 ```bash
 ./install-codex-macos.sh --update
 ./install-codex-macos.sh --update --update-dependencies
+./install-codex-macos.sh --skip-config
+./install-codex-macos.sh --reconfigure
 ```
+
+macOS 默认保留已有 `~/.codex/config.toml` 和 `~/.codex/auth.json`；需要跳过配置写入时使用 `--skip-config`，需要备份后重写配置/认证文件时使用 `--reconfigure`。
 
 > 说明：Windows 和 macOS 的双击入口格式不同，所以仓库提供 `.cmd` 和 `.command` 两个原生入口。它们会自动调用对应系统的安装脚本。
 > Codex macOS App：OpenAI 官方 Codex App 文档提供 Apple Silicon 和 Intel 版本下载入口；本仓库当前只自动安装/更新 macOS Codex CLI，不自动下载、缓存或安装 macOS App 包。
@@ -179,7 +183,7 @@ macOS双击更新Codex.command
 {"OPENAI_API_KEY":"YOUR_OPENAI_API_KEY"}
 ```
 
-如果已有 `auth.json`，脚本默认不会用同目录 `codex-auth.json` 覆盖；需要覆盖时请显式传入 `-Reconfigure`。`codex-auth.json` 已加入 `.gitignore`，不要提交真实密钥。
+如果已有 `auth.json`，脚本默认不会用同目录 `codex-auth.json` 覆盖；需要覆盖时 Windows 请显式传入 `-Reconfigure`，macOS 请显式传入 `--reconfigure`。`codex-auth.json` 已加入 `.gitignore`，不要提交真实密钥。
 
 ## 私有下载源与域名去敏
 
