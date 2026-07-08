@@ -38,8 +38,10 @@
   Windows: .\install-codex.ps1 -Force
 - 如需备份后重新生成 Codex 配置/认证文件：
   Windows: .\install-codex.ps1 -Reconfigure
+  macOS: ./install-codex-macos.sh --reconfigure
 - 如需完全不写 Codex 配置/认证文件：
   Windows: .\install-codex.ps1 -SkipConfig
+  macOS: ./install-codex-macos.sh --skip-config
 
 说明：
 - Windows 和 macOS 的双击入口格式不同，所以压缩包里会同时放 .cmd 和 .command 两个入口。
@@ -50,8 +52,8 @@
 可选免输入密钥方式：
 - 在本目录创建 codex-auth.json，内容格式如下：
   {"OPENAI_API_KEY":"YOUR_OPENAI_API_KEY"}
-- 如果 %USERPROFILE%\.codex\auth.json 不存在，脚本会复制 codex-auth.json。
-- 如果已有 auth.json，脚本默认保留，不会覆盖；需要覆盖时请显式传入 -Reconfigure。
+- 如果 %USERPROFILE%\.codex\auth.json 或 ~/.codex/auth.json 不存在，脚本会复制 codex-auth.json。
+- 如果已有 auth.json，脚本默认保留，不会覆盖；需要覆盖时 Windows 请显式传入 -Reconfigure，macOS 请显式传入 --reconfigure。
 
 可选私有下载源：
 - 默认优先使用国内友好的公开加速源：npmmirror 下载镜像和 registry.npmmirror.com。
@@ -83,8 +85,8 @@ Codex Windows App 可选安装：
 - Codex CLI：更新到 npm registry 可获取的 @openai/codex@latest。
 - Codex Windows App：默认通过 Microsoft Store / winget 尝试安装或更新；失败或超时后使用同目录 Codex Installer.exe，再尝试自定义下载源。
 - Codex Skills：提供 codex-skills.zip 或 CODEX_SKILLS_URL 时才重新同步。
-- 配置与认证：默认保留已有 config.toml / auth.json；仅缺失时补写，或在显式传入 -Reconfigure 时备份后重写。
-- 如果配置写入后后续步骤失败，脚本会自动还原本次修改过的 config.toml / auth.json；成功时备份保留在 %USERPROFILE%\.codex\backups\installer-...。
+- 配置与认证：默认保留已有 config.toml / auth.json；仅缺失时补写，或在显式传入 -Reconfigure / --reconfigure 时备份后重写。
+- Windows 如果配置写入后后续步骤失败，会自动还原本次修改过的 config.toml / auth.json；成功时备份保留在 %USERPROFILE%\.codex\backups\installer-...。
 
 Codex macOS App：
 - OpenAI 官方 Codex App 文档提供 macOS Apple Silicon / Intel 下载入口。

@@ -510,12 +510,13 @@ function Download-File {
     param(
         [Parameter(Mandatory=$true)][string]$Name,
         [Parameter(Mandatory=$true)][string[]]$Url,
-        [Parameter(Mandatory=$true)][string]$OutFile
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [long]$MinBytes = 1048576
     )
     Write-Step "下载 $Name"
     if (Test-Path $OutFile) {
         $size = (Get-Item $OutFile).Length
-        if ($size -gt 1024KB) {
+        if ($size -ge $MinBytes) {
             Write-Host "已存在，跳过下载：$OutFile" -ForegroundColor DarkYellow
             return
         }
@@ -530,11 +531,11 @@ function Download-File {
                 Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
                 Invoke-WebRequest -Uri $candidateUrl -OutFile $OutFile -UseBasicParsing -TimeoutSec 180 -MaximumRedirection 10
 
-                if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -ge 1024KB)) {
+                if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -ge $MinBytes)) {
                     Write-Host "下载完成：$OutFile" -ForegroundColor Green
                     return
                 }
-                throw "下载文件过小，可能是错误页或被代理拦截。"
+                throw "下载文件小于 $MinBytes 字节，可能是错误页或被代理拦截。"
             } catch {
                 $lastError = $_.Exception.Message
                 Write-Warning "$Name 下载失败：$lastError"
@@ -1278,7 +1279,7 @@ try {
             } elseif (-not [string]::IsNullOrWhiteSpace($plan.SkillsUrl)) {
                 $skillsName = Get-UrlFileName -Url $plan.SkillsUrl -Fallback "codex-skills.zip"
                 $skillsFile = Join-Path $WorkDir $skillsName
-                Download-File -Name "Codex Skills" -Url @($plan.SkillsUrl) -OutFile $skillsFile
+                Download-File -Name "Codex Skills" -Url @($plan.SkillsUrl) -OutFile $skillsFile -MinBytes 1024
                 Install-Skills -ZipFile $skillsFile
             } else {
                 Write-Info "未配置 Skills 包，跳过 Skills 安装。可使用 CODEX_SKILLS_URL 或同目录 codex-skills.zip 启用。"

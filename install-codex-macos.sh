@@ -20,6 +20,8 @@ VERIFY_DOWNLOADS="${CODEX_VERIFY_DOWNLOADS:-0}"
 NON_INTERACTIVE="${CODEX_NONINTERACTIVE:-0}"
 SKIP_PYTHON="${CODEX_SKIP_PYTHON:-0}"
 SKIP_SKILLS="${CODEX_SKIP_SKILLS:-0}"
+SKIP_CONFIG="${CODEX_SKIP_CONFIG:-0}"
+RECONFIGURE="${CODEX_RECONFIGURE:-0}"
 
 mkdir -p "$WORK_DIR" "$NODE_ROOT" "$NPM_PREFIX"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -47,13 +49,15 @@ parse_args() {
       --non-interactive) NON_INTERACTIVE=1 ;;
       --skip-python) SKIP_PYTHON=1 ;;
       --skip-skills) SKIP_SKILLS=1 ;;
+      --skip-config) SKIP_CONFIG=1 ;;
+      --reconfigure) RECONFIGURE=1 ;;
       --mirror)
         shift
         [ "$#" -gt 0 ] || fail "--mirror 需要参数：china 或 official"
         DOWNLOAD_MIRROR="$1"
         ;;
       --help|-h)
-        printf "用法：%s [--update] [--update-dependencies] [--check-only] [--verify-downloads] [--non-interactive] [--skip-python] [--skip-skills] [--mirror china|official]\n" "$0"
+        printf "用法：%s [--update] [--update-dependencies] [--check-only] [--verify-downloads] [--non-interactive] [--skip-python] [--skip-skills] [--skip-config] [--reconfigure] [--mirror china|official]\n" "$0"
         exit 0
         ;;
       *) fail "未知参数：$1" ;;
@@ -84,11 +88,12 @@ EOF
 download_file() {
   local name="$1"
   local out="$2"
-  shift 2
+  local min_bytes="$3"
+  shift 3
   local urls=("$@")
 
   step "下载 $name"
-  if [ -f "$out" ] && [ "$(wc -c < "$out")" -gt 1048576 ]; then
+  if [ -f "$out" ] && [ "$(wc -c < "$out")" -ge "$min_bytes" ]; then
     info "已存在，跳过下载：$out"
     return
   fi
@@ -100,10 +105,10 @@ download_file() {
     rm -f "$out"
     if curl -fL --retry 3 --connect-timeout 20 --max-time 300 "$url" -o "$out"; then
       [ -f "$out" ] || fail "下载失败：$name"
-      if [ "$(wc -c < "$out")" -gt 1048576 ]; then
+      if [ "$(wc -c < "$out")" -ge "$min_bytes" ]; then
         return
       fi
-      info "下载文件过小，可能是错误页或被代理拦截。"
+      info "下载文件小于 ${min_bytes} 字节，可能是错误页或被代理拦截。"
     fi
   done
 
@@ -162,6 +167,10 @@ append_path_once() {
 }
 
 toml_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
@@ -284,7 +293,7 @@ ensure_node() {
   local urls=()
   while IFS= read -r url; do urls+=("$url"); done < <(url_candidates "${CODEX_NODE_URL:-}" "https://npmmirror.com/mirrors/node/v$NODE_VERSION/$dist.tar.gz" "https://nodejs.org/dist/v$NODE_VERSION/$dist.tar.gz")
 
-  download_file "Node.js" "$tarball" "${urls[@]}"
+  download_file "Node.js" "$tarball" 1048576 "${urls[@]}"
   rm -rf "$target"
   tar -xzf "$tarball" -C "$NODE_ROOT"
   ln -sfn "$target" "$NODE_ROOT/current"
@@ -306,7 +315,7 @@ ensure_python() {
   local urls=()
   while IFS= read -r url; do urls+=("$url"); done < <(url_candidates "${CODEX_PYTHON_URL:-}" "https://npmmirror.com/mirrors/python/$PYTHON_VERSION/python-$PYTHON_VERSION-macos11.pkg" "https://www.python.org/ftp/python/$PYTHON_VERSION/python-$PYTHON_VERSION-macos11.pkg")
 
-  download_file "Python" "$pkg" "${urls[@]}"
+  download_file "Python" "$pkg" 1048576 "${urls[@]}"
   sudo installer -pkg "$pkg" -target /
   python3 --version
 }
@@ -344,7 +353,7 @@ install_skills() {
     zip_file="$SCRIPT_DIR/codex-skills.zip"
   elif [ -n "${CODEX_SKILLS_URL:-}" ]; then
     zip_file="$WORK_DIR/codex-skills.zip"
-    download_file "Codex Skills" "$zip_file" "$CODEX_SKILLS_URL"
+    download_file "Codex Skills" "$zip_file" 1024 "$CODEX_SKILLS_URL"
   else
     info "未配置 Skills 包，跳过 Skills 安装。可使用 CODEX_SKILLS_URL 或同目录 codex-skills.zip 启用。"
     return
@@ -370,37 +379,53 @@ install_skills() {
 
 write_codex_config() {
   step "写入 Codex 配置"
+  if [ "$SKIP_CONFIG" = "1" ]; then
+    info "已启用 --skip-config，跳过 Codex 配置写入。"
+    return
+  fi
+
   local codex_home="$HOME/.codex"
   local config="$codex_home/config.toml"
   local auth="$codex_home/auth.json"
   mkdir -p "$codex_home"
 
   if [ -f "$config" ]; then
-    local backup="$codex_home/config.toml.bak-$(date +%Y%m%d-%H%M%S)"
-    cp "$config" "$backup"
-    info "已备份旧配置：$backup"
+    if [ "$RECONFIGURE" = "1" ]; then
+      local backup="$codex_home/config.toml.bak-$(date +%Y%m%d-%H%M%S)"
+      cp "$config" "$backup"
+      info "检测到已有 config.toml，--reconfigure 已启用，已备份：$backup"
+    else
+      info "检测到已有 config.toml，默认保留不重写：$config"
+    fi
   fi
 
-  {
-    printf 'disable_response_storage = true\n'
-    printf 'network_access = "enabled"\n'
-    if [ -n "${CODEX_MODEL:-}" ]; then
-      printf 'model = "%s"\n' "$(toml_escape "$CODEX_MODEL")"
-    fi
-    if [ -n "${CODEX_BASE_URL:-}" ]; then
-      printf '\n[model_providers.OpenAI]\n'
-      printf 'name = "OpenAI"\n'
-      printf 'base_url = "%s"\n' "$(toml_escape "$CODEX_BASE_URL")"
-      printf 'wire_api = "responses"\n'
-      printf 'requires_openai_auth = true\n'
-    fi
-  } > "$config"
-  info "已写入：$config"
+  if [ ! -f "$config" ] || [ "$RECONFIGURE" = "1" ]; then
+    {
+      printf 'disable_response_storage = true\n'
+      printf 'network_access = "enabled"\n'
+      if [ -n "${CODEX_MODEL:-}" ]; then
+        printf 'model = "%s"\n' "$(toml_escape "$CODEX_MODEL")"
+      fi
+      if [ -n "${CODEX_BASE_URL:-}" ]; then
+        printf '\n[model_providers.OpenAI]\n'
+        printf 'name = "OpenAI"\n'
+        printf 'base_url = "%s"\n' "$(toml_escape "$CODEX_BASE_URL")"
+        printf 'wire_api = "responses"\n'
+        printf 'requires_openai_auth = true\n'
+      fi
+    } > "$config"
+    info "已写入：$config"
+  fi
 
   if [ -f "$SCRIPT_DIR/codex-auth.json" ]; then
-    cp "$SCRIPT_DIR/codex-auth.json" "$auth"
-    chmod 600 "$auth"
-    info "已从脚本同目录 codex-auth.json 写入认证文件：$auth"
+    if [ -f "$auth" ] && [ "$RECONFIGURE" != "1" ]; then
+      info "检测到已有 auth.json，默认不使用同目录 codex-auth.json 覆盖：$auth"
+      info "如需覆盖认证文件，请显式传入 --reconfigure。"
+    else
+      cp "$SCRIPT_DIR/codex-auth.json" "$auth"
+      chmod 600 "$auth"
+      info "已从脚本同目录 codex-auth.json 写入认证文件：$auth"
+    fi
     return
   fi
 
@@ -426,7 +451,7 @@ write_codex_config() {
   read -r -s -p "OPENAI_API_KEY: " api_key
   printf "\n"
   if [ -n "$api_key" ]; then
-    printf '{"OPENAI_API_KEY":"%s"}\n' "$api_key" > "$auth"
+    printf '{"OPENAI_API_KEY":"%s"}\n' "$(json_escape "$api_key")" > "$auth"
     chmod 600 "$auth"
     info "已写入：$auth"
   elif [ -f "$auth" ]; then

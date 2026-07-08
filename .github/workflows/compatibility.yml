@@ -45,6 +45,19 @@ jobs:
           bash -n macOS双击安装Codex.command
           bash -n macOS双击更新Codex.command
 
+      - name: Repository hygiene
+        run: |
+          test -x install-codex-macos.sh
+          test -x macOS双击安装Codex.command
+          test -x macOS双击更新Codex.command
+          git check-ignore -q codex-auth.json
+          git check-ignore -q downloads.local.json
+          git check-ignore -q codex-skills.zip
+          git check-ignore -q sample-install.log
+          ! git ls-files --error-unmatch codex-auth.json >/dev/null 2>&1
+          ! git ls-files --error-unmatch downloads.local.json >/dev/null 2>&1
+          ! git ls-files --error-unmatch codex-skills.zip >/dev/null 2>&1
+
   windows-powershell-parse:
     name: Windows PowerShell parser
     runs-on: windows-2022
