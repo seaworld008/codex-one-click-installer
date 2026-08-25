@@ -1,246 +1,472 @@
 name: Compatibility
 
 on:
-  push:
-    branches:
-      - main
-      - "codex/**"
-  pull_request:
+  workflow_call:
+    outputs:
+      gate-result:
+        description: Stable aggregate result exposed to release callers
+        value: ${{ jobs.gate.outputs.result }}
   workflow_dispatch:
-    inputs:
-      verify_downloads:
-        description: "检查 Node/Python/Git 下载源可达性"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
-      run_self_hosted_windows:
-        description: "在已注册的真实 Win10 self-hosted runner 上测试"
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: compatibility-${{ github.ref }}
+  group: compatibility-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  static-checks:
-    name: Static checks
-    runs-on: ubuntu-latest
+  static:
+    name: Static, repository, and release tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Ensure ShellCheck is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes shellcheck
+          fi
+          shellcheck --version
 
       - name: Bash syntax
+        shell: bash
         run: |
-          bash -n install-codex-macos.sh
-          bash -n macOS双击安装Codex.command
-          bash -n macOS双击更新Codex.command
+          set -euo pipefail
+          bash -n \
+            install-codex-unix.sh \
+            install-codex-macos.sh \
+            install-codex-linux.sh \
+            macOS双击安装Codex.command \
+            macOS双击更新Codex.command \
+            scripts/package-release.sh
 
-      - name: Repository hygiene
+      - name: Validate GitHub Actions workflows
+        shell: bash
         run: |
-          test -x install-codex-macos.sh
-          test -x macOS双击安装Codex.command
-          test -x macOS双击更新Codex.command
-          git check-ignore -q codex-auth.json
-          git check-ignore -q downloads.local.json
-          git check-ignore -q codex-skills.zip
-          git check-ignore -q sample-install.log
-          ! git ls-files --error-unmatch codex-auth.json >/dev/null 2>&1
-          ! git ls-files --error-unmatch downloads.local.json >/dev/null 2>&1
-          ! git ls-files --error-unmatch codex-skills.zip >/dev/null 2>&1
+          set -euo pipefail
+          go run \
+            github.com/rhysd/actionlint/cmd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca \
+            -color=false
 
-  windows-powershell-parse:
-    name: Windows PowerShell parser
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse install-codex.ps1 with Windows PowerShell 5.1
-        shell: powershell
+      - name: ShellCheck
+        shell: bash
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ".\install-codex.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors -and $errors.Count -gt 0) {
-            $errors | Format-List | Out-String | Write-Host
-            exit 1
-          }
+          set -euo pipefail
+          shellcheck --severity=warning \
+            install-codex-unix.sh \
+            install-codex-macos.sh \
+            install-codex-linux.sh \
+            macOS双击安装Codex.command \
+            macOS双击更新Codex.command \
+            scripts/package-release.sh
 
-  windows-simulated-matrix:
-    name: Windows ${{ matrix.mode.name }} plan (${{ matrix.scenario.name }})
-    runs-on: windows-2022
-    needs: windows-powershell-parse
+      - name: Python stdlib tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts tests
+          python3 -m unittest discover -s tests -v
+
+  linux-check-only:
+    name: Linux ${{ matrix.mode }} (${{ matrix.arch }}) check-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
-        mode:
-          - name: install
-            args: ""
-          - name: update
-            args: "-Update"
-        scenario:
-          - name: win10-pro-22h2-x64
-            caption: Microsoft Windows 10 Pro
-            version: 10.0.19045
-            arch: x64
-          - name: win10-enterprise-ltsc-1809-x64
-            caption: Microsoft Windows 10 Enterprise LTSC
-            version: 10.0.17763
-            arch: x64
-          - name: win11-pro-x64
-            caption: Microsoft Windows 11 Pro
-            version: 10.0.22631
-            arch: x64
-          - name: win11-arm64
-            caption: Microsoft Windows 11 Pro
-            version: 10.0.26100
-            arch: arm64
-          - name: win8-legacy-x64
-            caption: Microsoft Windows 8
-            version: 6.2.9200
-            arch: x64
-          - name: win81-legacy-x64
-            caption: Microsoft Windows 8.1
-            version: 6.3.9600
-            arch: x64
-    env:
-      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
+        mode: [install, update]
+        arch: [x64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Check ${{ matrix.mode.name }} plan
-        shell: powershell
+      - name: Run deterministic Linux plan
+        shell: bash
+        env:
+          CODEX_TEST_UNAME_S: Linux
+          CODEX_TEST_ARCH: ${{ matrix.arch }}
+          CODEX_TEST_OS_VERSION: Ubuntu 24.04 LTS
+          MODE: ${{ matrix.mode }}
         run: |
-          $args = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", ".\install-codex.ps1",
-            "-CheckOnly",
-            "-NoPause",
-            "-NonInteractive",
-            "-DownloadMirror", "china",
-            "-TestWindowsCaption", "${{ matrix.scenario.caption }}",
-            "-TestWindowsVersion", "${{ matrix.scenario.version }}",
-            "-TestArch", "${{ matrix.scenario.arch }}"
-          )
-          if ("${{ matrix.mode.args }}" -ne "") {
-            $args += "${{ matrix.mode.args }}"
-          }
-          if ($env:VERIFY_DOWNLOADS -eq "true") {
-            $args += "-VerifyDownloads"
-          }
-          & powershell.exe @args
-
-  windows-hosted-runners:
-    name: Hosted Windows ${{ matrix.mode.name }} (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
-    needs: windows-powershell-parse
-    strategy:
-      fail-fast: false
-      matrix:
-        mode:
-          - name: install
-            args: ""
-          - name: update
-            args: "-Update"
-        runner:
-          - windows-2022
-          - windows-latest
-    env:
-      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check actual hosted runner ${{ matrix.mode.name }} plan
-        shell: powershell
-        run: |
-          $args = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", ".\install-codex.ps1",
-            "-CheckOnly",
-            "-NoPause",
-            "-NonInteractive",
-            "-DownloadMirror", "china"
-          )
-          if ("${{ matrix.mode.args }}" -ne "") {
-            $args += "${{ matrix.mode.args }}"
-          }
-          if ($env:VERIFY_DOWNLOADS -eq "true") {
-            $args += "-VerifyDownloads"
-          }
-          & powershell.exe @args
-
-  macos-matrix:
-    name: macOS ${{ matrix.mode.name }} plan (${{ matrix.macos_version }}, ${{ matrix.arch }})
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        mode:
-          - name: install
-            args: ""
-          - name: update
-            args: "--update"
-        macos_version:
-          - "13.5"
-          - "14.0"
-        arch:
-          - x64
-          - arm64
-    env:
-      VERIFY_DOWNLOADS: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_downloads || 'true' }}
-      CODEX_TEST_ARCH: ${{ matrix.arch }}
-      CODEX_TEST_MACOS_VERSION: ${{ matrix.macos_version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check ${{ matrix.mode.name }} plan
-        run: |
-          chmod +x install-codex-macos.sh
-          args=(--check-only --mirror china)
-          if [ -n "${{ matrix.mode.args }}" ]; then
-            args+=("${{ matrix.mode.args }}")
+          set -euo pipefail
+          args=(--check-only --non-interactive)
+          if [ "$MODE" = "update" ]; then
+            args+=(--update)
           fi
-          if [ "$VERIFY_DOWNLOADS" = "true" ]; then
-            args+=(--verify-downloads)
+          ./install-codex-unix.sh "${args[@]}"
+          ./install-codex-linux.sh "${args[@]}"
+
+  macos-check-only:
+    name: macOS ${{ matrix.mode }} (${{ matrix.arch }}) check-only
+    runs-on: macos-15
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [install, update]
+        arch: [x64, arm64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run deterministic macOS plan
+        shell: bash
+        env:
+          CODEX_TEST_UNAME_S: Darwin
+          CODEX_TEST_ARCH: ${{ matrix.arch }}
+          CODEX_TEST_OS_VERSION: "15.0"
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          args=(--check-only --non-interactive)
+          if [ "$MODE" = "update" ]; then
+            args+=(--update)
           fi
+          ./install-codex-unix.sh "${args[@]}"
           ./install-codex-macos.sh "${args[@]}"
 
-  self-hosted-win10:
-    name: Real Win10 self-hosted (${{ matrix.edition }})
-    if: github.event_name == 'workflow_dispatch' && inputs.run_self_hosted_windows == 'true'
-    runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - ${{ matrix.label }}
+  windows:
+    name: Windows PowerShell 5.1 (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - edition: Pro
-            label: win10-pro
-          - edition: Enterprise
-            label: win10-enterprise
+        runner: [windows-2022, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Check real Win10 environment install plan
+      - name: Parse with Windows PowerShell 5.1
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -CheckOnly -NoPause -NonInteractive -VerifyDownloads -DownloadMirror china
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            throw "Expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ".\install-codex.ps1"),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Host
+            throw "Windows PowerShell parser reported $($errors.Count) error(s)."
+          }
 
-      - name: Check real Win10 environment update plan
+      - name: Install pinned PSScriptAnalyzer
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -Update -CheckOnly -NoPause -NonInteractive -VerifyDownloads -DownloadMirror china
+          $requiredVersion = [version]"1.25.0"
+          $module = Get-Module -ListAvailable -Name PSScriptAnalyzer |
+            Where-Object Version -eq $requiredVersion |
+            Select-Object -First 1
+          if ($null -eq $module) {
+            Install-Module PSScriptAnalyzer `
+              -RequiredVersion $requiredVersion `
+              -Repository PSGallery `
+              -Scope CurrentUser `
+              -Force `
+              -AllowClobber
+            $module = Get-Module -ListAvailable -Name PSScriptAnalyzer |
+              Where-Object Version -eq $requiredVersion |
+              Select-Object -First 1
+          }
+          if ($null -eq $module) {
+            throw "PSScriptAnalyzer $requiredVersion was not installed."
+          }
+          Import-Module $module.Path -Force
+          "PSScriptAnalyzer=$((Get-Module PSScriptAnalyzer).Version)" | Write-Host
+
+      - name: Analyze PowerShell
+        shell: powershell
+        run: |
+          $findings = @(
+            Invoke-ScriptAnalyzer `
+              -Path ".\install-codex.ps1" `
+              -Severity Error
+          )
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table -AutoSize | Out-String | Write-Host
+            throw "PSScriptAnalyzer reported $($findings.Count) error(s)."
+          }
+
+      - name: Simulate supported and unsupported Windows plans
+        shell: powershell
+        run: |
+          $scenarios = @(
+            @{
+              Name = "Windows 10 Enterprise LTSC 1809 x64"
+              Caption = "Microsoft Windows 10 Enterprise LTSC"
+              Version = "10.0.17763"
+              Arch = "x64"
+              ProductType = 1
+              ExpectedSuccess = $true
+            },
+            @{
+              Name = "Windows 10 current x64"
+              Caption = "Microsoft Windows 10 Pro"
+              Version = "10.0.19045"
+              Arch = "x64"
+              ProductType = 1
+              ExpectedSuccess = $true
+            },
+            @{
+              Name = "Windows 11 x64"
+              Caption = "Microsoft Windows 11 Pro"
+              Version = "10.0.22631"
+              Arch = "x64"
+              ProductType = 1
+              ExpectedSuccess = $true
+            },
+            @{
+              Name = "Windows 11 arm64"
+              Caption = "Microsoft Windows 11 Pro"
+              Version = "10.0.26100"
+              Arch = "arm64"
+              ProductType = 1
+              ExpectedSuccess = $true
+            },
+            @{
+              Name = "Windows 8 x64 must fail"
+              Caption = "Microsoft Windows 8"
+              Version = "6.2.9200"
+              Arch = "x64"
+              ProductType = 1
+              ExpectedSuccess = $false
+            },
+            @{
+              Name = "Windows Server 2022 must fail"
+              Caption = "Microsoft Windows Server 2022"
+              Version = "10.0.20348"
+              Arch = "x64"
+              ProductType = 3
+              ExpectedSuccess = $false
+            },
+            @{
+              Name = "Unknown ProductType must fail"
+              Caption = "Microsoft Windows"
+              Version = "10.0.26100"
+              Arch = "x64"
+              ProductType = 0
+              ExpectedSuccess = $false
+            }
+          )
+          $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          foreach ($mode in @("install", "update")) {
+            foreach ($scenario in $scenarios) {
+              "=== $mode / $($scenario.Name) ===" | Write-Host
+              $arguments = @(
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", ".\install-codex.ps1",
+                "-CheckOnly",
+                "-NoPause",
+                "-NonInteractive",
+                "-TestWindowsCaption", $scenario.Caption,
+                "-TestWindowsVersion", $scenario.Version,
+                "-TestArch", $scenario.Arch,
+                "-TestProductType", $scenario.ProductType
+              )
+              if ($mode -eq "update") {
+                $arguments += "-Update"
+              }
+              $output = & $powershell @arguments 2>&1
+              $exitCode = $LASTEXITCODE
+              $output | ForEach-Object { "$_" | Write-Host }
+              if ($scenario.ExpectedSuccess -and $exitCode -ne 0) {
+                throw "$mode / $($scenario.Name) unexpectedly failed with $exitCode."
+              }
+              if (-not $scenario.ExpectedSuccess -and $exitCode -eq 0) {
+                throw "$mode / $($scenario.Name) unexpectedly succeeded."
+              }
+            }
+          }
+
+      - name: Reject test-only overrides outside CheckOnly
+        shell: powershell
+        run: |
+          $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $arguments = @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\install-codex.ps1",
+            "-NoPause",
+            "-NonInteractive",
+            "-TestWindowsCaption", "Microsoft Windows 11 Pro",
+            "-TestWindowsVersion", "10.0.26100",
+            "-TestArch", "x64",
+            "-TestProductType", "1"
+          )
+          $output = & $powershell @arguments 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { "$_" | Write-Host }
+          if ($exitCode -eq 0) {
+            throw "Test-only overrides unexpectedly bypassed the non-CheckOnly guard."
+          }
+          if (($output | Out-String) -notmatch "CheckOnly") {
+            throw "Test-only override rejection did not explain the CheckOnly requirement."
+          }
+
+      - name: Validate desktop application minimum Windows build
+        shell: powershell
+        run: |
+          $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $baseArguments = @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\install-codex.ps1",
+            "-CheckOnly",
+            "-NoPause",
+            "-NonInteractive",
+            "-TestWindowsCaption", "Microsoft Windows 10 Enterprise LTSC",
+            "-TestProductType", "1"
+          )
+          $cases = @(
+            @{
+              Name = "optional desktop is skipped below 19041"
+              Version = "10.0.17763"
+              Arch = "x64"
+              Arguments = @("-InstallDesktopApp")
+              ExpectedSuccess = $true
+              ExpectedPattern = "19041"
+            },
+            @{
+              Name = "required desktop fails below 19041"
+              Version = "10.0.17763"
+              Arch = "x64"
+              Arguments = @("-RequireDesktopApp")
+              ExpectedSuccess = $false
+              ExpectedPattern = "19041"
+            },
+            @{
+              Name = "required arm64 desktop is eligible at 19041"
+              Version = "10.0.19041"
+              Arch = "arm64"
+              Arguments = @("-RequireDesktopApp")
+              ExpectedSuccess = $true
+              ExpectedPattern = "CheckOnly"
+            }
+          )
+          foreach ($case in $cases) {
+            $arguments = @($baseArguments)
+            $arguments += @(
+              "-TestWindowsVersion", $case.Version,
+              "-TestArch", $case.Arch
+            )
+            $arguments += $case.Arguments
+            $output = & $powershell @arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            $output | ForEach-Object { "$_" | Write-Host }
+            if ($case.ExpectedSuccess -and $exitCode -ne 0) {
+              throw "$($case.Name) unexpectedly failed with $exitCode."
+            }
+            if (-not $case.ExpectedSuccess -and $exitCode -eq 0) {
+              throw "$($case.Name) unexpectedly succeeded."
+            }
+            if (($output | Out-String) -notmatch $case.ExpectedPattern) {
+              throw "$($case.Name) did not report $($case.ExpectedPattern)."
+            }
+          }
+
+      - name: Validate custom standalone directory boundaries
+        shell: powershell
+        run: |
+          $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $baseArguments = @(
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", ".\install-codex.ps1",
+            "-CheckOnly",
+            "-NoPause",
+            "-NonInteractive",
+            "-TestWindowsCaption", "Microsoft Windows 11 Pro",
+            "-TestWindowsVersion", "10.0.26100",
+            "-TestArch", "x64",
+            "-TestProductType", "1"
+          )
+          $cases = @(
+            @{ Value = "relative\codex"; ExpectedSuccess = $false },
+            @{ Value = "C:relative"; ExpectedSuccess = $false },
+            @{ Value = "C:\"; ExpectedSuccess = $false },
+            @{ Value = "\\server\share"; ExpectedSuccess = $false },
+            @{ Value = "\\?\C:\Tools\Codex"; ExpectedSuccess = $false },
+            @{ Value = "C:\Tools\Codex"; ExpectedSuccess = $true }
+          )
+          $original = $env:CODEX_INSTALL_DIR
+          try {
+            foreach ($case in $cases) {
+              $env:CODEX_INSTALL_DIR = $case.Value
+              $output = & $powershell @baseArguments 2>&1
+              $exitCode = $LASTEXITCODE
+              $output | ForEach-Object { "$_" | Write-Host }
+              if ($case.ExpectedSuccess -and $exitCode -ne 0) {
+                throw "Safe absolute CODEX_INSTALL_DIR unexpectedly failed: $($case.Value)"
+              }
+              if (-not $case.ExpectedSuccess -and $exitCode -eq 0) {
+                throw "Unsafe CODEX_INSTALL_DIR unexpectedly passed: $($case.Value)"
+              }
+            }
+          } finally {
+            $env:CODEX_INSTALL_DIR = $original
+          }
+
+  gate:
+    name: Compatibility gate
+    if: ${{ always() }}
+    needs: [static, linux-check-only, macos-check-only, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      result: ${{ steps.aggregate.outputs.result }}
+    steps:
+      - name: Require every compatibility job
+        id: aggregate
+        shell: bash
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          LINUX_RESULT: ${{ needs.linux-check-only.result }}
+          MACOS_RESULT: ${{ needs.macos-check-only.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: |
+          set -euo pipefail
+          failures=()
+          for entry in \
+            "static=$STATIC_RESULT" \
+            "linux-check-only=$LINUX_RESULT" \
+            "macos-check-only=$MACOS_RESULT" \
+            "windows=$WINDOWS_RESULT"; do
+            if [ "${entry#*=}" != "success" ]; then
+              failures+=("$entry")
+            fi
+          done
+          if [ "${#failures[@]}" -ne 0 ]; then
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+            printf 'Required compatibility job did not succeed: %s\n' "${failures[@]}" >&2
+            exit 1
+          fi
+          echo "result=success" >> "$GITHUB_OUTPUT"

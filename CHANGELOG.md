@@ -1,0 +1,63 @@
+# Changelog
+
+本项目采用 [Semantic Versioning](https://semver.org/)。
+
+## [Unreleased]
+
+暂无。
+
+## [2.0.0] - 2026-08-25
+
+### Added
+
+- 新增 OpenAI 官方 standalone CLI 安装路径，支持固定 `--release` / `-Release`。
+- 新增 Linux x64 / Arm64 入口及共享 Unix 核心脚本。
+- 新增 Windows ChatGPT 桌面应用精确 Store ID 与官方 MSIX 回退。
+- 新增可选开发工具安装、纯预检、bootstrap 下载验证和企业摘要固定。
+- 新增定期 upstream smoke、确定性 Release 打包、SHA256SUMS 和 SPDX SBOM。
+- 新增 GitHub/Sigstore provenance 与 SBOM attestation、draft 回读校验和幂等发布。
+- 新增仓库行为测试、Security Policy、贡献指南、迁移指南和故障排查。
+
+### Changed
+
+- CLI 默认安装方式由 npm 改为 OpenAI 官方 standalone。
+- 桌面产品名称统一为 ChatGPT desktop app。
+- Windows/macOS 双击安装入口默认安装 CLI 并尝试桌面应用；开发工具改为显式选项。
+- macOS 双击安装入口通过 `codex app` 使用官方桌面应用流程。
+- Release 同时提供 ZIP 与 tar.gz，并验证解包后的执行权限。
+
+### Security
+
+- 下载 bootstrap 后先在随机私有临时目录中检查，再执行；不使用 pipe-to-shell。
+- 下载在传输期限制最大体积；Windows MSIX 额外绑定 `OpenAI.Codex` identity、Store publisher 和目标架构。
+- Windows 桌面应用在下载前强制 build 19041 门槛，避免在较旧 LTSC 上下载必然无法部署的大型 MSIX。
+- Codex 包的版本解析、SHA256、锁、staging、自检与原子切换委托给官方 installer。
+- 安装验收绑定本次方法的确切目标和显式请求版本，并拒绝 PATH 用旧版本冒充成功。
+- Release 要求 annotated tag 已进入 `main`，发布前后复核远端 tag；资产在 draft 中回读通过后才公开，不覆盖不一致的既有资产。
+- 删除全流程 UAC、持久 ExecutionPolicy 修改、全局 npm registry/prefix 修改和 TLS 1.0/1.1。
+- 删除 API Key 提示、`auth.json` / `config.toml` 生成和任意远程 Skills ZIP。
+- 删除 macOS 递归 quarantine 清除。
+- 所有 GitHub Actions 使用完整提交 SHA 固定。
+
+### Removed
+
+- 删除无法完整追溯来源与许可的 `Codex Installer.exe`。
+- 删除 `codex-auth.example.json` 和 `downloads.local.example.json`。
+- 删除 Windows 8 / 8.1、Node 16 和手工维护的 Git/Node/Python 下载清单。
+- 删除旧 `winget install Codex -s msstore` 模糊包名路径。
+
+### Breaking
+
+- 不再自动创建 Codex 配置或认证文件。
+- 不再默认安装或更新 Skills。
+- 自定义 EXE、MSI、PKG 与任意 URL 下载执行不再支持。
+- Windows 最低基线提升到 10.0.17763，Windows 11 为推荐平台。
+
+## [1.2.0] - 2026-07-06
+
+- Windows 幂等安装、更新入口和可选 App 兜底。
+- 该版本的发布 ZIP 曾丢失 macOS 文件执行权限；已在 v2 发布链路中加入真实归档回归测试。
+
+[Unreleased]: https://github.com/seaworld008/codex-one-click-installer/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/seaworld008/codex-one-click-installer/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/seaworld008/codex-one-click-installer/releases/tag/v1.2.0

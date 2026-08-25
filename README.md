@@ -1,260 +1,338 @@
-# Codex 跨平台一键安装与更新器
+# Codex / ChatGPT 跨平台一键安装器
 
 [![Compatibility](https://github.com/seaworld008/codex-one-click-installer/actions/workflows/compatibility.yml/badge.svg)](https://github.com/seaworld008/codex-one-click-installer/actions/workflows/compatibility.yml)
+[![Upstream smoke](https://github.com/seaworld008/codex-one-click-installer/actions/workflows/upstream-smoke.yml/badge.svg)](https://github.com/seaworld008/codex-one-click-installer/actions/workflows/upstream-smoke.yml)
 [![Latest Release](https://img.shields.io/github/v/release/seaworld008/codex-one-click-installer?display_name=tag&sort=semver)](https://github.com/seaworld008/codex-one-click-installer/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/seaworld008/codex-one-click-installer)](LICENSE)
-[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-2ea44f)](#支持范围)
-[![OpenAI Codex CLI](https://img.shields.io/badge/OpenAI-Codex%20CLI%20%2B%20App%20%2B%20Update-412991)](https://github.com/seaworld008/codex-one-click-installer)
-[![GitHub stars](https://img.shields.io/github/stars/seaworld008/codex-one-click-installer?style=social)](https://github.com/seaworld008/codex-one-click-installer/stargazers)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-2ea44f)](#支持范围)
 
-Windows / macOS one-click installer and updater for OpenAI Codex CLI, with optional Codex App support on Windows through Microsoft Store / winget and a bundled fallback installer.
+面向 Windows、macOS 和 Linux 的中文 Codex CLI 安装与更新入口，同时可选安装 ChatGPT 桌面应用和常用开发工具。
 
-这个仓库提供 Windows 和 macOS 的 Codex CLI 一键安装与更新脚本；在 Windows 上，脚本会优先按 [OpenAI 官方 Windows 文档](https://developers.openai.com/codex/app/windows) 推荐的 Microsoft Store / `winget install Codex -s msstore` 路径尽量安装或更新 Codex App。如果 Microsoft Store / winget 不可用、失败或 300 秒内未完成，则自动改用仓库同目录的 `Codex Installer.exe` 作为国内网络/离线兜底。若你在企业内网另有可信安装器，也可以用 `CODEX_APP_INSTALLER_URL` 作为自定义兜底。它适合希望快速安装、后续持续更新 Codex CLI，又不想手动处理 Git / Node.js / Python / npm registry / 网络镜像的用户。脚本会优先使用官方可获取的安装包；当系统或架构不满足官方安装条件时，会在下载和安装前尽早提示用户。
+本项目是社区维护的便捷包装器，不是 OpenAI 官方安装器，也不代表 OpenAI。它不重新打包 Codex CLI，不内置来源不明的二进制，而是调用 [OpenAI 官方 Codex CLI 安装器](https://learn.chatgpt.com/docs/codex/cli)；产品能力、账号可用性和系统要求以官方文档为准。
 
-如果这个项目帮到了你，欢迎 Star、转发给需要的人，或者在 Issues 里补充你的系统环境和安装结果，帮助更多用户少走弯路。
+## v2.0.0 的核心变化
 
-## 亮点
+- 改用 OpenAI 官方 standalone 安装器，Node.js 和 npm 不再是安装 Codex CLI 的前置条件。
+- 新增 Linux x64 / Arm64 入口；macOS 继续支持 Intel 与 Apple Silicon。
+- Windows 桌面端改用官方 ChatGPT Microsoft Store 产品 ID `9PLM9XGG6VKS`，不再使用模糊的 `Codex` 包名。
+- 删除仓库内置 `Codex Installer.exe`、任意远程 Skills ZIP 和自定义 EXE 下载执行路径。
+- 安装器不再读取 API Key，也不创建或覆盖 `~/.codex/auth.json`、`~/.codex/config.toml`。
+- 不再递归清除 macOS Gatekeeper quarantine，不再永久修改 PowerShell ExecutionPolicy 或 npm 全局配置。
+- Windows 8 / 8.1 不再支持；Windows 10 1809 及以上仅为尽力兼容，Windows 11 是推荐基线。
+- Release 自动生成 ZIP、tar.gz、SHA256 校验文件和 SPDX SBOM，验证归档解包后的真实执行权限，并为资产生成 GitHub/Sigstore provenance 与 SBOM attestation。
 
-- 双击即可开始：Windows 使用 `.cmd`，macOS 使用 `.command`，安装和更新都有独立入口。
-- CLI + App + Update：默认安装/更新 Codex CLI；Windows 在未禁用 App 步骤时优先尝试 Microsoft Store / winget 路径，慢速或不可达时自动使用内置 `Codex Installer.exe` 兜底。
-- 幂等安装：Windows 已检测到 Codex CLI 可用时，默认不重装 CLI、不覆盖配置；Git / Node.js / Python 仍会补缺，保障 Skills 和常见开发任务可用。
-- 更新更稳妥：默认只更新 Codex CLI、可选 App、可选 Skills；Git / Node.js / Python 只补缺，显式启用依赖更新时才升级。
-- 跨平台覆盖：Windows 10 / 11、部分 Windows 8 / 8.1 兼容路径、macOS x64 / Apple Silicon。
-- 国内网络友好：默认使用 `npmmirror.com` 和 `registry.npmmirror.com`，失败时回退官方源。
-- 预检优先：支持只检查系统、架构和下载源，不安装、不写配置。
-- 安全默认值：真实 API Key、本地下载源、安装包和日志默认不会提交到仓库。
-- CI 兜底：GitHub Actions 覆盖 PowerShell 语法、Windows/macOS 安装计划和更新计划。
+完整变更见 [CHANGELOG.md](CHANGELOG.md)，从 v1.x 升级前请阅读 [v2 迁移指南](docs/migration-v2.md)。
 
 ## 快速开始
 
-从 [Releases](https://github.com/seaworld008/codex-one-click-installer/releases/latest) 下载最新压缩包，解压后按系统双击入口：
+从 [Releases](https://github.com/seaworld008/codex-one-click-installer/releases/latest) 下载最新版并校验 SHA256，解压后使用对应入口。
 
-| 系统 | 安装入口 | 更新入口 | 命令行入口 |
+| 系统 | 首次安装 | 后续更新 | 默认行为 |
 | --- | --- | --- | --- |
-| Windows | `Windows双击安装Codex.cmd` | `Windows双击更新Codex.cmd` | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1` |
-| macOS | `macOS双击安装Codex.command` | `macOS双击更新Codex.command` | `chmod +x macOS双击安装Codex.command macOS双击更新Codex.command install-codex-macos.sh && ./macOS双击安装Codex.command` |
+| Windows | 双击 `Windows双击安装Codex.cmd` | 双击 `Windows双击更新Codex.cmd` | 安装/更新 CLI，并尝试安装/更新桌面应用；开发工具必须显式选择 |
+| macOS | 双击 `macOS双击安装Codex.command` | 双击 `macOS双击更新Codex.command` | 安装/更新 CLI，并打开官方桌面应用流程；开发工具必须显式选择 |
+| Linux | `./install-codex-linux.sh` | `./install-codex-linux.sh --update` | 默认仅安装/更新 CLI |
 
-默认安装/更新目标：
-
-| 能力 | Windows | macOS |
-| --- | --- | --- |
-| Codex CLI | 安装与更新 | 安装与更新 |
-| Codex App | 可选：默认尝试 Microsoft Store / `winget install Codex -s msstore`；失败或超时后使用同目录 `Codex Installer.exe` 兜底 | 暂未自动安装或更新；可按 [OpenAI Codex app 文档](https://developers.openai.com/codex/app) 手动下载 |
-| Codex Skills | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 | 可选：提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 后安装/更新 |
-| Git / Node.js / Python | 每次运行都补缺；`-UpdateDependencies` 时更新 | 默认补缺；`--update-dependencies` 时更新 Node.js / Python |
-
-安装完成后，重新打开终端或 PowerShell：
+安装后重新打开终端，执行：
 
 ```bash
 codex --version
 codex
 ```
 
+第一次运行 `codex` 时，按界面选择“使用 ChatGPT 登录”或其他可用的官方认证方式。安装脚本不会询问或写入你的密钥；私有安装日志会记录安装器及子进程输出，因此不要把凭据放进命令参数，公开日志前仍须脱敏。
+
 ## 支持范围
 
-- Windows 10 / Windows 11：默认安装兼容优先的官方依赖，适配专业版、企业版、LTSC 常见环境。
-- Windows 8.1：使用旧版官方 Git / Node.js / Python 兼容路径，尽量完成安装。
-- Windows 8：使用更保守的旧版官方依赖，尽量完成安装。
-- macOS 13.5+：支持 x64 和 Apple Silicon。
+| 平台 | 架构 | 支持级别 | 说明 |
+| --- | --- | --- | --- |
+| Windows 11 | x64 / Arm64 | 推荐 | 原生 PowerShell 路径；桌面应用支持官方 Windows sandbox |
+| Windows 10 1809+ | x64 | 尽力兼容 | CLI 最低 build 17763；桌面应用最低 build 19041，较旧 LTSC 会跳过桌面步骤 |
+| macOS | Intel / Apple Silicon | 支持 | CLI 由官方 standalone 安装器选择正确架构 |
+| Linux | x64 / Arm64 | 支持 | 需要 Bash 与 `curl`；桌面应用请按官方发行版文档安装 |
+| Windows 8 / 8.1、32 位系统 | — | 不支持 | 已停止维护且不满足现代 Codex 安全与运行时基线 |
 
-> Windows 8 / 8.1 已过官方生命周期。脚本会尽力安装，但 Codex 最新版本可能不再保证在旧系统完整可用。
-> GitHub 官方托管 runner 不是 Windows 10 桌面版。仓库内的 GitHub Actions 会做安装计划、下载源和脚本语法矩阵测试；如需真实 Win10 专业版/企业版测试，请注册 self-hosted runner 并使用 workflow_dispatch 触发。
+Windows 用户如果开发环境主要位于 WSL2，请参考 [OpenAI WSL 指南](https://learn.chatgpt.com/docs/windows/wsl)，并将仓库放在 Linux 文件系统（例如 `~/code`）以获得更好的性能。WSL1 已不再受现代 Codex 支持。
 
-## 默认下载源
+桌面应用的支持范围与 CLI 不完全相同，请分别参考 [ChatGPT 桌面应用](https://learn.chatgpt.com/docs/app)、[Windows 应用](https://learn.chatgpt.com/docs/windows/windows-app) 和 [Linux 应用](https://learn.chatgpt.com/docs/linux/linux-app)。
 
-脚本默认使用国内友好的公开加速源：
+## 安全模型
 
-- Node.js / Python / Git for Windows：优先 `https://npmmirror.com/mirrors/...`，失败后回退官方源。
-- npm registry：默认 `https://registry.npmmirror.com`，安装 Codex CLI 失败时自动回退 `https://registry.npmjs.org`。
+默认 standalone 路径采用两层校验：
 
-如果你在海外网络、公司内网或有自己的镜像，可设置 `CODEX_DOWNLOAD_MIRROR=official`，或使用环境变量 / `downloads.local.json` 覆盖具体 URL。
+1. 本仓库从固定的 `https://releases.openai.com/codex/install.sh` 或 `https://releases.openai.com/codex/install.ps1` 下载官方 bootstrap 到本次运行专属的临时目录，不使用 `curl | sh` 或 `irm | iex`。它们是官方文档中 `https://chatgpt.com/codex/install.*` 入口重定向后的最终地址。
+2. 官方 bootstrap 从 `releases.openai.com` 获取版本化元数据和 SHA256 清单，在 staging 中安装、自检并原子切换当前版本；官方源不可用时才按其自身逻辑回退 OpenAI 的 GitHub Release。
+
+你还可以用 `CODEX_BOOTSTRAP_SHA256` 固定本次允许执行的 bootstrap 摘要。bootstrap 会随上游更新，因此固定摘要需要由组织自己的发布流程同步维护。
+
+本项目的默认边界：
+
+- 不写入或改写 Codex 配置、认证、模型、sandbox、网络访问和数据存储策略。
+- 不安装远程 Skills 包；请使用 Codex 当前支持的 skills / plugins 管理流程。
+- 不默认安装 Git、Node.js、Python、GitHub CLI 或系统包管理器；开发工具步骤必须显式选择。
+- 不提交、不分发 EXE、MSI、PKG、DMG 或 Codex 本体。
+- 不关闭 Gatekeeper，不降低 TLS 协议，不改变用户的全局 npm registry、prefix 或 PowerShell ExecutionPolicy。
+- 桌面应用失败不会伪装成完整成功；CLI 成功但可选桌面应用失败会明确标记为“部分成功”。使用 require 参数可以把它提升为整体失败。
+
+安全问题请不要公开粘贴利用细节或密钥，按 [SECURITY.md](SECURITY.md) 使用 GitHub 私密漏洞报告。
 
 ## Windows
 
-解压最新 Release 后双击运行：
+### 双击入口
 
 ```text
 Windows双击安装Codex.cmd
-```
-
-或在 PowerShell 中运行：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1
-```
-
-后续更新可双击：
-
-```text
 Windows双击更新Codex.cmd
 ```
 
-或在 PowerShell 中运行：
+安装入口默认执行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 -Update
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 `
+  -InstallDesktopApp
 ```
 
-可选参数：
+更新入口默认执行：
 
 ```powershell
-.\install-codex.ps1 -SkipGit -SkipPython -SkipSkills -SkipCodexApp
-.\install-codex.ps1 -Update -UpdateDependencies
-.\install-codex.ps1 -Force
-.\install-codex.ps1 -Reconfigure
-.\install-codex.ps1 -SkipConfig
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 `
+  -Update -InstallDesktopApp
 ```
 
-Windows 幂等策略：
+这里的 `ExecutionPolicy Bypass` 只作用于这一次 PowerShell 进程；脚本不会修改持久化 ExecutionPolicy。
 
-- 如果 `codex --version` 已成功返回，安装模式会提示是否强制重装 Codex CLI；默认回答为否，非交互模式也会跳过 CLI 重装。
-- 即使 Codex CLI 已可用，Git / Node.js / Python 仍会按“缺失才安装”的方式检查并补齐，方便 Skills、Git 工作流和本地脚本使用。
-- 已有 `~/.codex/config.toml` 和 `~/.codex/auth.json` 默认保留，不会被安装/更新覆盖。
-- 使用 `-Force` 可强制重装 Codex CLI 以及已配置的可选 App/Skills；使用 `-Reconfigure` 才会备份后重写 Codex 配置/认证文件。
-- 如果配置写入后后续步骤失败，脚本会自动还原本次修改过的 `config.toml` / `auth.json`；成功时备份会保留在 `~/.codex/backups/installer-...`。
-
-Windows Codex App 可选安装方式：
-
-- 默认路径：脚本会先按 [OpenAI 官方 Windows 文档](https://developers.openai.com/codex/app/windows) 尝试 `winget install Codex -s msstore`；如果已检测到 Codex App，会尝试 `winget upgrade Codex -s msstore`。
-- 国内/离线兜底：如果 winget 不可用、失败或 300 秒内未完成，脚本会自动改用同目录 `Codex Installer.exe`。
-- 企业自定义兜底：如果需要使用自己的可信安装器下载源，可设置 `CODEX_APP_INSTALLER_URL` / `downloads.local.json` 的 `CodexAppUrl`。
-- 自定义安装器会先尝试静默安装；如果安装器不支持静默参数，会打开普通安装窗口。
-- Codex App 是可选步骤；Store / winget / 自定义安装器失败时，脚本会给出提示，但不会影响 Codex CLI、Git、Node.js、Python 或 Skills 的安装结果。
-- 如只想安装 Codex CLI，可传入 `-SkipCodexApp`。
-- 仓库内置的 `Codex Installer.exe` 是国内网络/离线兜底，不作为首选更新源；如关注最新 App 版本，优先使用 winget 或替换为你刚从官方入口下载的新安装器。
-
-预检模式，不安装、不写配置，适合先排查系统兼容性和下载源：
+### 常用参数
 
 ```powershell
-.\install-codex.ps1 -CheckOnly -VerifyDownloads -NoPause
-.\install-codex.ps1 -Update -CheckOnly -VerifyDownloads -NoPause
+# 默认：只安装/更新 Codex CLI
+.\install-codex.ps1
+
+# 指定版本；latest 为默认值
+.\install-codex.ps1 -Release 0.149.1
+
+# 同时安装/更新 ChatGPT 桌面应用
+.\install-codex.ps1 -InstallDesktopApp
+
+# 桌面应用失败时让整个流程失败
+.\install-codex.ps1 -InstallDesktopApp -RequireDesktopApp
+
+# 显式选择后，仅在缺失时通过 winget 补充 Git、Node.js、Python 3、GitHub CLI
+.\install-codex.ps1 -InstallDevTools
+
+# 显式使用 npm 兼容路径；不会永久修改 npm 配置
+.\install-codex.ps1 -CliMethod npm -NpmRegistry https://registry.npmjs.org
+
+# 只打印计划，不安装、不下载、不写用户目录
+.\install-codex.ps1 -CheckOnly -NonInteractive -NoPause
+
+# 下载并检查官方 bootstrap，但不安装
+.\install-codex.ps1 -CheckOnly -VerifyDownloads -NonInteractive -NoPause
 ```
+
+Windows 桌面应用优先使用：
+
+```powershell
+winget install --id 9PLM9XGG6VKS --exact -s msstore
+```
+
+也可以使用 OpenAI 官方文档链接的 [Microsoft Web Installer](https://get.microsoft.com/installer/download/9PLM9XGG6VKS)。
+
+ChatGPT desktop app 的包清单最低要求 Windows build 19041。CLI 仍可在 build 17763+ 尽力运行；低于 19041 时，可选桌面步骤会明确标记为部分成功并跳过下载，`-RequireDesktopApp` 则在预检中失败。
+
+如果 Microsoft Store / winget 不可用，脚本可以回退到 OpenAI 官方发布的架构固定、Store 签名 MSIX。脚本会先限制下载体积，再校验包清单中的 `OpenAI.Codex` identity、OpenAI Store publisher 与目标架构，随后执行 Authenticode 和 `Add-AppxPackage` 信任链/部署校验；脚本不会执行自定义 EXE。
 
 ## macOS
 
-解压最新 Release 后双击运行：
+### 双击入口
 
 ```text
 macOS双击安装Codex.command
-```
-
-如果系统提示没有执行权限，再用终端运行：
-
-```bash
-chmod +x macOS双击安装Codex.command macOS双击更新Codex.command install-codex-macos.sh
-./macOS双击安装Codex.command
-```
-
-后续更新可双击：
-
-```text
 macOS双击更新Codex.command
 ```
 
-或在终端中运行：
+如果 Finder 首次阻止打开，请使用 macOS 提供的“右键 → 打开”确认来源，或在“系统设置 → 隐私与安全性”中查看拦截原因。不要运行递归 `xattr -dr` 绕过 Gatekeeper。
+
+命令行方式：
 
 ```bash
+chmod +x install-codex-unix.sh install-codex-macos.sh
+
+./install-codex-macos.sh
 ./install-codex-macos.sh --update
-./install-codex-macos.sh --update --update-dependencies
-./install-codex-macos.sh --skip-config
-./install-codex-macos.sh --reconfigure
+./install-codex-macos.sh --install-app
+./install-codex-macos.sh --install-dev-tools
 ```
 
-macOS 默认保留已有 `~/.codex/config.toml` 和 `~/.codex/auth.json`；需要跳过配置写入时使用 `--skip-config`，需要备份后重写配置/认证文件时使用 `--reconfigure`。
+桌面应用步骤调用当前 CLI 的 `codex app`，让 OpenAI 自己的流程处理应用下载与打开，仓库不硬编码或重新分发 DMG。
 
-> 说明：Windows 和 macOS 的双击入口格式不同，所以仓库提供 `.cmd` 和 `.command` 两个原生入口。它们会自动调用对应系统的安装脚本。
-> Codex macOS App：OpenAI 官方 Codex App 文档提供 Apple Silicon 和 Intel 版本下载入口；本仓库当前只自动安装/更新 macOS Codex CLI，不自动下载、缓存或安装 macOS App 包。
+## Linux
 
-## 更新策略
+```bash
+chmod +x install-codex-unix.sh install-codex-linux.sh
 
-更新模式的目标是“尽量少打扰、安全刷新”：
-
-- Codex CLI：安装模式下如果已可用则默认跳过；更新模式运行 `npm install -g @openai/codex@latest`，更新到 npm registry 可获取的最新版本。
-- Codex Windows App：更新模式会优先使用 Microsoft Store / winget 尝试安装或更新；如果 winget 失败或超时，则改用同目录 `Codex Installer.exe`，再尝试 `CODEX_APP_INSTALLER_URL` / `CodexAppUrl` 自定义路径。
-- Codex Skills：仅在提供 `codex-skills.zip` 或 `CODEX_SKILLS_URL` 时重新同步。
-- Git / Node.js / Python：默认只在缺失或不满足最低要求时安装；Windows 使用 `-UpdateDependencies`，macOS 使用 `--update-dependencies` 时才按当前计划版本重新安装。
-- 密钥与配置：默认保留已有 `~/.codex/config.toml` 和 `~/.codex/auth.json`；仅缺失时补写，或在显式传入 `-Reconfigure` 时备份后重写。
-
-## 密钥配置
-
-首次安装且未检测到 `auth.json` 时，脚本会提示输入 `OPENAI_API_KEY`。也可以在脚本同目录创建 `codex-auth.json`：
-
-```json
-{"OPENAI_API_KEY":"YOUR_OPENAI_API_KEY"}
+./install-codex-linux.sh
+./install-codex-linux.sh --update
+./install-codex-linux.sh --release 0.149.1
 ```
 
-如果已有 `auth.json`，脚本默认不会用同目录 `codex-auth.json` 覆盖；需要覆盖时 Windows 请显式传入 `-Reconfigure`，macOS 请显式传入 `--reconfigure`。`codex-auth.json` 已加入 `.gitignore`，不要提交真实密钥。
+脚本不会擅自使用 root 安装通用开发环境。Linux 使用 `--install-dev-tools` 时只会给出可复制的系统包命令，不会自动执行；macOS 只会在缺少 Git 时启动 Apple Command Line Tools 官方流程。
 
-## 私有下载源与域名去敏
+## Unix 通用参数
 
-仓库默认只保留公开官方下载源，不包含私有域名、签名 URL、临时 token 或镜像域名。
+`install-codex-macos.sh` 和 `install-codex-linux.sh` 都是薄入口，实际逻辑位于 `install-codex-unix.sh`。
 
-如果需要使用自己的下载源，请使用环境变量或本地 `downloads.local.json` 覆盖；该文件已加入 `.gitignore`。
-
-可用字段 / 环境变量：
-
-| 字段 | 环境变量 | 用途 |
-| --- | --- | --- |
-| `DownloadMirror` | `CODEX_DOWNLOAD_MIRROR` | 下载源模式：`china` 或 `official` |
-| `NodeVersion` | `CODEX_NODE_VERSION` | 覆盖默认 Node.js 版本 |
-| `PythonVersion` | `CODEX_PYTHON_VERSION` | 覆盖默认 Python 版本 |
-| `GitUrl` | `CODEX_GIT_URL` | Git for Windows 安装包 |
-| `NodeUrl` | `CODEX_NODE_URL` | Node.js 安装包 |
-| `PythonUrl` | `CODEX_PYTHON_URL` | Python 安装包 |
-| `SkillsUrl` | `CODEX_SKILLS_URL` | 可选 Skills zip 包 |
-| `CodexAppUrl` | `CODEX_APP_INSTALLER_URL` | 可选 Codex Windows App 自定义安装器，企业/离线兜底使用 |
-| `NpmRegistry` | `CODEX_NPM_REGISTRY` | 可选 npm registry |
-| `CodexBaseUrl` | `CODEX_BASE_URL` | 可选 OpenAI 兼容 API 地址 |
-| `CodexModel` | `CODEX_MODEL` | 可选默认模型 |
+```text
+--update
+--release VERSION
+--method standalone|brew|npm
+--install-app
+--require-app
+--install-dev-tools
+--check-only
+--verify-downloads
+--non-interactive
+--help
+```
 
 示例：
 
-```json
-{
-  "DownloadMirror": "china",
-  "SkillsUrl": "https://example.invalid/codex-skills.zip",
-  "CodexAppUrl": "https://example.invalid/Codex%20Installer.exe",
-  "NpmRegistry": "https://registry.npmmirror.com",
-  "CodexBaseUrl": "https://api.openai.com/v1",
-  "CodexModel": "gpt-5.5"
-}
+```bash
+# Homebrew 已存在时显式使用 cask
+./install-codex-macos.sh --method brew
+
+# npm 已存在时显式使用 npm，不写 ~/.npmrc
+CODEX_NPM_REGISTRY=https://registry.npmjs.org \
+  ./install-codex-linux.sh --method npm
+
+# 仅下载并检查官方 bootstrap
+./install-codex-unix.sh --check-only --verify-downloads --non-interactive
 ```
 
-> `CodexAppUrl` 不是默认下载源。普通 Windows 用户建议使用官方 Microsoft Store / winget 路径；只有企业镜像、离线安装或自建可信镜像时才需要填写。
+## 更新与安装来源迁移
 
-## GitHub Actions 兼容性测试
+官方 standalone 安装器会识别 npm / Bun 管理的旧 Codex，并提示 PATH 中可能存在多个安装来源。先确认新版本可用：
 
-仓库提供 `.github/workflows/compatibility.yml`：
+```bash
+type -a codex
+codex --version
+codex doctor --summary
+```
 
-- Windows PowerShell 5.1 语法解析。
-- Windows 10 Pro、Windows 10 Enterprise LTSC、Windows 11、Windows 8/8.1 的安装与更新计划模拟。
-- Windows hosted runner 的真实环境预检。
-- macOS x64 / arm64 安装与更新计划模拟。
-- 可选 self-hosted Win10 Pro / Enterprise 真实机器安装与更新计划测试。
+Windows PowerShell：
 
-真实 Win10 桌面版测试需要在 GitHub 仓库注册 self-hosted runner，并给机器加标签：
+```powershell
+Get-Command codex -All
+codex --version
+codex doctor --summary --no-color --ascii
+```
+
+本仓库会先验证本次安装方法推导出的确切可执行文件；指定非 `latest` 版本时还会比对实际版本。如果当前 PATH 仍优先解析到旧 Codex，流程会明确失败并要求重新打开终端，而不会拿旧命令冒充本次安装成功。
+
+确认 standalone 路径优先且工作正常后，如不再需要旧 npm 版本，可自行执行：
+
+```bash
+npm uninstall -g @openai/codex
+```
+
+不要在验证新安装之前卸载旧版本。安装器也不会替你删除已有 npm、Homebrew、配置、认证或会话数据。
+
+## 认证、代理与企业 CA
+
+交互式使用建议直接运行：
+
+```bash
+codex
+# 或
+codex login
+```
+
+自动化场景请按 [官方认证文档](https://learn.chatgpt.com/docs/auth) 使用进程级凭据，避免把密钥写进仓库、脚本、Issue、日志或 shell history。
+
+代理通常由当前进程继承：
 
 ```text
-self-hosted, Windows, X64, win10-pro
-self-hosted, Windows, X64, win10-enterprise
+HTTPS_PROXY
+HTTP_PROXY
+NO_PROXY
 ```
 
-然后在 GitHub Actions 页面手动运行 `Compatibility` workflow，并把 `run_self_hosted_windows` 设为 `true`。
+如果组织使用 TLS 拦截或私有根证书：
 
-## 安全提示
+- macOS / Linux 首次安装可由组织提供 PEM CA bundle，并在运行前设置 `CURL_CA_BUNDLE=/absolute/path/company-ca-bundle.pem`；该变量会同时作用于本仓库的 `curl` 和随后官方 bootstrap 使用的 `curl`。
+- Windows 应由 IT 将组织根证书部署到 Windows 受信任根证书存储，使 PowerShell、Store 和 AppX 使用同一系统信任策略。
+- `CODEX_CA_CERTIFICATE` 属于 Codex CLI 安装后的运行期网络配置，不能替代首次 bootstrap 下载所需的 curl/Windows 系统信任。
 
-- 不要提交 `codex-auth.json`、`downloads.local.json`、安装包、zip 包或日志文件。
-- 脚本写入配置前会备份已有 `~/.codex/config.toml`。
-- Windows 日志在 `%TEMP%\codex-installer`。
-- macOS 日志在 `${TMPDIR}/codex-installer`。
+不要使用 `curl -k`、`NODE_TLS_REJECT_UNAUTHORIZED=0` 或关闭 PowerShell 证书校验。详见 [故障排查](docs/troubleshooting.md)。
 
-## 参与贡献
+## Release 校验
 
-欢迎提交 Issue、改进脚本、补充真实设备测试结果或提供新的下载源兼容反馈。为了让问题更快被复现，请尽量带上：
+每个正式 Release 应包含：
 
-- 操作系统版本、CPU 架构和终端类型。
-- 运行的入口文件或命令。
-- 是否使用代理、公司内网或自定义镜像。
-- 预检命令输出、错误截图或日志中的关键错误信息。
+- `codex-one-click-installer-vX.Y.Z.zip`
+- `codex-one-click-installer-vX.Y.Z.tar.gz`
+- `SHA256SUMS`
+- SPDX JSON SBOM
 
-适合新贡献者的任务会标记为 `good first issue`，需要社区协助验证的任务会标记为 `help wanted`。
+macOS：
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+Linux：
+
+```bash
+sha256sum -c SHA256SUMS
+```
+
+Windows PowerShell 可逐个比对：
+
+```powershell
+Get-FileHash .\codex-one-click-installer-v2.0.0.zip -Algorithm SHA256
+Get-Content .\SHA256SUMS
+```
+
+ZIP 和 tar.gz 都会在发布流水线中重新解包验证；`.sh` / `.command` 必须保持 `0755`，从而避免 v1.2.0 曾出现的“Git 中可执行、发布包中不可执行”问题。
+
+发布流水线还会为 `SHA256SUMS` 中的资产生成 GitHub artifact attestation。安装前可以额外验证来源：
+
+```bash
+gh attestation verify codex-one-click-installer-v2.0.0.zip \
+  --repo seaworld008/codex-one-click-installer
+```
+
+## CI 与证据边界
+
+- `Compatibility`：语法、静态规则、仓库测试、Windows PowerShell 5.1、Windows 10/11 计划、macOS/Linux 计划和发布打包测试。
+- `Upstream smoke`：定期检查 OpenAI bootstrap、release metadata、npm 包和桌面应用 URL 是否仍可用。
+- `Release`：要求 annotated tag 与 `VERSION` 一致、commit 已进入 `origin/main`，发布前后复核远端 tag；资产先进入 draft、下载回读校验并生成 provenance/SBOM attestation，最后才公开。已存在 Release 只允许摘要完全一致的幂等重跑，不覆盖公开资产。
+
+CI 的 `CheckOnly` 通过只证明脚本解析和计划分支通过，不等于所有真实设备、代理、Store、登录或生产网络都已验证。正式兼容性声明仍应以真实 Windows/macOS/Linux 安装与 `codex --version` 结果为准。
+
+## 开发与贡献
+
+提交改动前运行：
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+bash -n install-codex-unix.sh install-codex-macos.sh install-codex-linux.sh
+bash -n macOS双击安装Codex.command macOS双击更新Codex.command
+./scripts/package-release.sh
+git diff --check
+```
+
+Windows 还应使用 Windows PowerShell 5.1 解析并运行 `-CheckOnly`。完整要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 相关官方资料
+
+- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
+- [ChatGPT 桌面应用](https://learn.chatgpt.com/docs/app)
+- [Windows 桌面应用](https://learn.chatgpt.com/docs/windows/windows-app)
+- [Windows WSL](https://learn.chatgpt.com/docs/windows/wsl)
+- [Codex 认证](https://learn.chatgpt.com/docs/auth)
+- [Codex 配置](https://learn.chatgpt.com/docs/config-file/config-basic)
+- [Codex 环境变量](https://learn.chatgpt.com/docs/config-file/environment-variables)
+
+## License
+
+本仓库脚本和文档使用 [MIT License](LICENSE)。Codex、ChatGPT 及其官方分发包遵循 OpenAI 各自的许可和服务条款；本仓库不对其重新授权。

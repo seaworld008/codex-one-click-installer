@@ -1,218 +1,292 @@
-﻿# Codex Windows 一键安装脚本
-# 支持：Windows 10 / Windows 11；Windows 8 / 8.1 使用旧版官方依赖的兼容路径
-# 用法：双击同目录下的「Windows双击安装Codex.cmd」或「Windows双击更新Codex.cmd」
+﻿# Codex Windows 一键安装/更新脚本 v2
+# 官方入口：https://chatgpt.com/codex/install.ps1
+# 实际固定入口：https://releases.openai.com/codex/install.ps1
 
+[CmdletBinding()]
 param(
     [switch]$Update,
-    [switch]$UpdateDependencies,
-    [switch]$SkipGit,
-    [switch]$SkipPython,
-    [switch]$SkipSkills,
-    [switch]$SkipCodexApp,
+    [ValidateSet("standalone", "npm")]
+    [string]$CliMethod = "standalone",
+    [string]$Release = "latest",
+    [switch]$InstallDesktopApp,
+    [switch]$RequireDesktopApp,
+    [switch]$InstallDevTools,
     [switch]$CheckOnly,
     [switch]$VerifyDownloads,
-    [switch]$NoPause,
     [switch]$NonInteractive,
-    [switch]$Force,
-    [switch]$Reconfigure,
-    [switch]$SkipConfig,
-    [switch]$UseLatestDependencies,
-    [string]$DownloadMirror = "",
+    [switch]$NoPause,
+    [string]$NpmRegistry = "",
+    [Alias("ExpectedBootstrapSha256")]
+    [string]$BootstrapSha256 = $env:CODEX_BOOTSTRAP_SHA256,
     [string]$TestWindowsVersion = "",
     [string]$TestWindowsCaption = "",
-    [string]$TestArch = ""
+    [string]$TestArch = "",
+    [Nullable[int]]$TestProductType = $null
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+$OfficialBootstrapUrl = "https://releases.openai.com/codex/install.ps1"
+$OfficialLatestChannelUrl = "https://releases.openai.com/codex/channels/latest"
+$DesktopStoreId = "9PLM9XGG6VKS"
+$DesktopMsixX64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix"
+$DesktopMsixArm64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix"
+$DesktopMinimumOsBuild = 19041
 $ActionName = $(if ($Update) { "更新" } else { "安装" })
-$ActionPlanName = $(if ($Update) { "安装/更新" } else { "安装" })
-$RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$ConfigRestorePlan = New-Object System.Collections.Generic.List[object]
 
-# ========== 公开官方版本配置 ==========
-# 默认走“兼容优先”版本。Codex CLI 当前只要求 Node.js >= 16，
-# 因此 Windows 10 专业版/企业版/LTSC 上优先安装更稳的 LTS 依赖。
-$ModernGitVersion = "2.55.0.2"
-$ModernGitTag = "v2.55.0.windows.2"
-$ModernNodeVersion = "22.17.0"
-$ModernPythonVersion = "3.12.10"
+$script:LogFile = $null
+$script:WorkDir = $null
+$script:BootstrapPath = $null
+$script:DesktopMsixPath = $null
+$script:NpmExecutable = $null
+$script:ValidatedCodexInstallDir = $null
 
-$LatestNodeVersion = "24.18.0"
-$LatestPythonVersion = "3.14.6"
+try {
+    [Console]::OutputEncoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+} catch {}
 
-$LegacyGitVersion = "2.46.0"
-$LegacyGitTag = "v2.46.0.windows.1"
-$LegacyNodeVersion = "16.20.2"
-$LegacyPythonWin81Version = "3.12.10"
-$LegacyPythonWin8Version = "3.8.10"
-$CodexAppWingetTimeoutSeconds = 300
+function Protect-LogText {
+    param([AllowEmptyString()][string]$Text)
 
-# ========== 基础路径 ==========
-$ScriptDir = Split-Path -Parent $PSCommandPath
-$TempRoot = $env:TEMP
-if ([string]::IsNullOrWhiteSpace($TempRoot)) { $TempRoot = [IO.Path]::GetTempPath() }
-$WorkDir = Join-Path $TempRoot "codex-installer"
-New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
-$LogFile = Join-Path $WorkDir ("install-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
-$LocalConfigPath = Join-Path $ScriptDir "downloads.local.json"
-$LocalConfig = $null
-if (Test-Path $LocalConfigPath) {
-    $LocalConfig = Get-Content -Raw -Path $LocalConfigPath | ConvertFrom-Json
+    if ($null -eq $Text) { return "" }
+
+    # 日志和屏幕输出都去掉 URL query/fragment，避免代理签名或临时令牌泄露。
+    $urlPattern = '(?i)(https?://[^\s?#"''<>]+)(?:\?[^\s#"''<>]*)?(?:#[^\s"''<>]*)?'
+    return [regex]::Replace([string]$Text, $urlPattern, '$1')
+}
+
+function Write-LogRecord {
+    param([string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($script:LogFile)) { return }
+    try {
+        Add-Content -LiteralPath $script:LogFile -Value (Protect-LogText $Message) -Encoding UTF8
+    } catch {}
+}
+
+function Write-Line {
+    param(
+        [string]$Message = "",
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    $safeMessage = Protect-LogText $Message
+    Write-Host $safeMessage -ForegroundColor $Color
+    Write-LogRecord $safeMessage
 }
 
 function Write-Step {
     param([string]$Message)
-    Write-Host ""
-    Write-Host "========== $Message ==========" -ForegroundColor Cyan
+
+    Write-Line ""
+    Write-Line "========== $Message ==========" Cyan
 }
 
 function Write-Info {
     param([string]$Message)
-    Write-Host $Message -ForegroundColor DarkCyan
+    Write-Line $Message DarkCyan
 }
 
-function Confirm-Action {
-    param(
-        [string]$Message,
-        [bool]$Default = $false
-    )
-
-    if ($NonInteractive) { return $Default }
-
-    $suffix = $(if ($Default) { "[Y/n]" } else { "[y/N]" })
-    $answer = Read-Host "$Message $suffix"
-    if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
-
-    return ($answer.Trim() -match "^(y|yes|true|1|是|确认|確定)$")
+function Write-Success {
+    param([string]$Message)
+    Write-Line $Message Green
 }
 
-function Test-Admin {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Write-Warn {
+    param([string]$Message)
+
+    $safeMessage = Protect-LogText $Message
+    Write-Warning $safeMessage
+    Write-LogRecord "警告：$safeMessage"
 }
 
-function Invoke-SelfElevate {
-    if (-not (Test-Admin)) {
-        Write-Host "需要管理员权限，正在弹出 UAC 授权窗口..." -ForegroundColor Yellow
-        $powerShellExe = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-        $sysnativePowerShell = Join-Path $env:WINDIR "Sysnative\WindowsPowerShell\v1.0\powershell.exe"
-        if (Test-Path $sysnativePowerShell) { $powerShellExe = $sysnativePowerShell }
-        if (-not (Test-Path $powerShellExe)) { $powerShellExe = "powershell.exe" }
+function Get-SafeUrl {
+    param([string]$Value)
 
-        $args = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-        if ($SkipGit) { $args += " -SkipGit" }
-        if ($SkipPython) { $args += " -SkipPython" }
-        if ($SkipSkills) { $args += " -SkipSkills" }
-        if ($SkipCodexApp) { $args += " -SkipCodexApp" }
-        if ($Update) { $args += " -Update" }
-        if ($UpdateDependencies) { $args += " -UpdateDependencies" }
-        if ($CheckOnly) { $args += " -CheckOnly" }
-        if ($VerifyDownloads) { $args += " -VerifyDownloads" }
-        if ($NoPause) { $args += " -NoPause" }
-        if ($NonInteractive) { $args += " -NonInteractive" }
-        if ($Force) { $args += " -Force" }
-        if ($Reconfigure) { $args += " -Reconfigure" }
-        if ($SkipConfig) { $args += " -SkipConfig" }
-        if ($UseLatestDependencies) { $args += " -UseLatestDependencies" }
-        if (-not [string]::IsNullOrWhiteSpace($DownloadMirror)) { $args += " -DownloadMirror `"$DownloadMirror`"" }
-
-        try {
-            Start-Process -FilePath $powerShellExe -ArgumentList $args -Verb RunAs
-        } catch {
-            throw "无法获取管理员权限。请右键以管理员身份运行，或联系 IT 放行 UAC。详细错误：$($_.Exception.Message)"
-        }
-        exit
-    }
-}
-
-function Enable-Tls12 {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
-    } catch {}
+        $uri = New-Object -TypeName System.Uri -ArgumentList @($Value)
+        return $uri.GetLeftPart([System.UriPartial]::Path)
+    } catch {
+        return "<无效 URL>"
+    }
 }
 
-function Get-ConfigValue {
-    param(
-        [string]$Name,
-        [string]$EnvName,
-        [string]$DefaultValue = ""
+function Assert-ReleaseValue {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "-Release 不能为空。请使用 latest 或明确版本号。"
+    }
+
+    $candidate = $Value.Trim()
+    if ($candidate -cnotmatch '^(?:latest|(?:rust-v|v)?[0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?)?)$') {
+        throw "无效的 -Release：$candidate。请使用 latest 或 x.y.z[-alpha...|-beta...]。"
+    }
+}
+
+function Assert-BootstrapSha256 {
+    param([string]$Value)
+
+    if (-not [string]::IsNullOrWhiteSpace($Value) -and $Value.Trim() -cnotmatch '^[0-9a-fA-F]{64}$') {
+        throw "-BootstrapSha256 必须是 64 位十六进制 SHA-256。"
+    }
+}
+
+function Assert-NpmRegistry {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return }
+
+    try {
+        $uri = New-Object -TypeName System.Uri -ArgumentList @($Value.Trim())
+    } catch {
+        throw "-NpmRegistry 必须是有效的 HTTPS 绝对 URL。"
+    }
+
+    if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne "https") {
+        throw "-NpmRegistry 仅允许 HTTPS 绝对 URL。"
+    }
+    if ([string]::IsNullOrWhiteSpace($uri.Host)) {
+        throw "-NpmRegistry 必须包含有效主机名。"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($uri.UserInfo)) {
+        throw "-NpmRegistry 不允许在 URL 中嵌入用户名或密码。"
+    }
+    if (-not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
+        throw "-NpmRegistry 不允许携带 query 或 fragment，以免令牌或签名参数进入安装流程或子进程环境。"
+    }
+}
+
+function Resolve-CodexInstallDirectory {
+    param([Parameter(Mandatory=$true)][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "CODEX_INSTALL_DIR 不能为空白值。"
+    }
+
+    $candidate = $Value.Trim()
+    $isDriveAbsolute = $candidate -match '^[A-Za-z]:[\\/]'
+    $isUncAbsolute = $candidate -match '^[\\/]{2}[^\\/:*?"<>|]+[\\/][^\\/:*?"<>|]+(?:[\\/]|$)'
+    if (-not $isDriveAbsolute -and -not $isUncAbsolute) {
+        throw "CODEX_INSTALL_DIR 必须是 Windows 绝对路径（例如 C:\Tools\Codex 或 \\server\share\Codex）。"
+    }
+    if ($candidate -match '^[\\/]{2}[?.][\\/]') {
+        throw "CODEX_INSTALL_DIR 不允许使用设备路径或扩展路径前缀。"
+    }
+    if (-not [System.IO.Path]::IsPathRooted($candidate)) {
+        throw "CODEX_INSTALL_DIR 必须是 rooted/absolute 路径，不能使用驱动器相对路径。"
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($candidate)
+        $rootPath = [System.IO.Path]::GetPathRoot($fullPath)
+    } catch {
+        throw "CODEX_INSTALL_DIR 无法规范化为有效 Windows 路径。"
+    }
+    if ([string]::IsNullOrWhiteSpace($rootPath)) {
+        throw "CODEX_INSTALL_DIR 无法确定文件系统根。"
+    }
+
+    $directorySeparators = [char[]]@("\", "/")
+    $normalizedPath = $fullPath.TrimEnd($directorySeparators)
+    $normalizedRoot = $rootPath.TrimEnd($directorySeparators)
+    if ($normalizedPath.Equals($normalizedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "CODEX_INSTALL_DIR 不得解析为驱动器根或 UNC 共享根。"
+    }
+    return $normalizedPath
+}
+
+function Assert-TestOverridesAreCheckOnly {
+    $hasTestOverride = (
+        -not [string]::IsNullOrEmpty($TestWindowsVersion) -or
+        -not [string]::IsNullOrEmpty($TestWindowsCaption) -or
+        -not [string]::IsNullOrEmpty($TestArch) -or
+        $null -ne $TestProductType
     )
 
-    $envValue = [Environment]::GetEnvironmentVariable($EnvName, "Process")
-    if (-not [string]::IsNullOrWhiteSpace($envValue)) { return $envValue.Trim() }
-
-    if ($LocalConfig -and $LocalConfig.PSObject.Properties[$Name]) {
-        $localValue = [string]$LocalConfig.$Name
-        if (-not [string]::IsNullOrWhiteSpace($localValue)) { return $localValue.Trim() }
+    if ($hasTestOverride -and -not $CheckOnly) {
+        throw "-TestWindowsVersion、-TestWindowsCaption、-TestArch 和 -TestProductType 仅允许与 -CheckOnly 一起使用。"
     }
-
-    return $DefaultValue
 }
 
-function Get-DownloadMirror {
-    if (-not [string]::IsNullOrWhiteSpace($DownloadMirror)) {
-        $mirror = $DownloadMirror.Trim().ToLowerInvariant()
-    } else {
-        $mirror = (Get-ConfigValue -Name "DownloadMirror" -EnvName "CODEX_DOWNLOAD_MIRROR" -DefaultValue "china").ToLowerInvariant()
+function Get-WindowsRegistryFallback {
+    $registryPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+    try {
+        $currentVersion = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
+    } catch {
+        return $null
     }
 
-    if ($mirror -notin @("china", "official")) {
-        Write-Warning "未知下载源模式：$mirror。已改用 china。可选值：china / official。"
-        return "china"
-    }
-    return $mirror
-}
+    $installationProperty = $currentVersion.PSObject.Properties["InstallationType"]
+    $productNameProperty = $currentVersion.PSObject.Properties["ProductName"]
+    $buildProperty = $currentVersion.PSObject.Properties["CurrentBuildNumber"]
+    $majorProperty = $currentVersion.PSObject.Properties["CurrentMajorVersionNumber"]
+    $minorProperty = $currentVersion.PSObject.Properties["CurrentMinorVersionNumber"]
 
-function Get-UrlOverride {
-    param([string]$Name, [string]$EnvName)
-    return Get-ConfigValue -Name $Name -EnvName $EnvName -DefaultValue ""
-}
+    $installationType = $(if ($null -eq $installationProperty) { "" } else { [string]$installationProperty.Value })
+    $productName = $(if ($null -eq $productNameProperty) { "" } else { [string]$productNameProperty.Value })
+    $productType = $null
 
-function New-UrlCandidates {
-    param(
-        [string]$OverrideUrl,
-        [string]$ChinaUrl,
-        [string]$OfficialUrl,
-        [string]$Mirror
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($OverrideUrl)) {
-        return @($OverrideUrl.Trim())
+    if ($productName -match '(?i)\bWindows\s+Server\b') {
+        $productType = 3
+    } elseif ($installationType.Equals("Client", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $productType = 1
+    } elseif ($installationType -match '(?i)^Server(?:\s|$)|^Nano\s+Server$') {
+        $productType = 3
     }
 
-    if ($Mirror -eq "official") {
-        return @($OfficialUrl, $ChinaUrl)
+    $versionText = ""
+    $buildNumber = $(if ($null -eq $buildProperty) { "" } else { [string]$buildProperty.Value })
+    [int]$parsedBuild = 0
+    if ([int]::TryParse($buildNumber, [ref]$parsedBuild) -and $parsedBuild -gt 0) {
+        [int]$majorVersion = 10
+        [int]$minorVersion = 0
+        [int]$parsedComponent = 0
+        if ($null -ne $majorProperty -and [int]::TryParse([string]$majorProperty.Value, [ref]$parsedComponent)) {
+            $majorVersion = $parsedComponent
+        }
+        $parsedComponent = 0
+        if ($null -ne $minorProperty -and [int]::TryParse([string]$minorProperty.Value, [ref]$parsedComponent)) {
+            $minorVersion = $parsedComponent
+        }
+        $versionText = "$majorVersion.$minorVersion.$parsedBuild"
     }
 
-    return @($ChinaUrl, $OfficialUrl)
-}
-
-function Get-CommandPath {
-    param([string]$Command)
-    $cmd = Get-Command $Command -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    return $null
+    return [pscustomobject]@{
+        Caption = $productName
+        VersionText = $versionText
+        ProductType = $productType
+        InstallationType = $installationType
+    }
 }
 
 function Get-WindowsInfo {
     if (-not [string]::IsNullOrWhiteSpace($TestWindowsVersion)) {
-        $caption = $(if (-not [string]::IsNullOrWhiteSpace($TestWindowsCaption)) { $TestWindowsCaption } else { "Microsoft Windows Test" })
-        return [pscustomobject]@{
-            Caption = $caption
-            Version = [version]$TestWindowsVersion
-            Architecture = $(if (-not [string]::IsNullOrWhiteSpace($TestArch)) { $TestArch } else { "x64" })
-            ProductType = 1
-            OperatingSystemSKU = 0
+        try {
+            $version = New-Object -TypeName System.Version -ArgumentList @($TestWindowsVersion.Trim())
+        } catch {
+            throw "-TestWindowsVersion 不是有效版本号：$TestWindowsVersion"
         }
+
+        return [pscustomobject]@{
+            Caption = $(if ([string]::IsNullOrWhiteSpace($TestWindowsCaption)) { "Microsoft Windows Test" } else { $TestWindowsCaption.Trim() })
+            Version = $version
+            Architecture = $(if ([string]::IsNullOrWhiteSpace($TestArch)) { "x64" } else { $TestArch.Trim() })
+            ProductType = $(if ($null -eq $TestProductType) { 1 } else { [int]$TestProductType })
+        }
+    }
+
+    if ([Environment]::GetEnvironmentVariable("OS") -ne "Windows_NT") {
+        throw "install-codex.ps1 仅支持 Windows。CI 可通过 -TestWindowsVersion/-TestWindowsCaption/-TestArch 执行预检。"
     }
 
     $caption = ""
     $versionText = ""
     $architecture = ""
     $productType = $null
-    $sku = $null
 
     try {
         $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
@@ -220,7 +294,6 @@ function Get-WindowsInfo {
         $versionText = [string]$os.Version
         $architecture = [string]$os.OSArchitecture
         $productType = $os.ProductType
-        $sku = $os.OperatingSystemSKU
     } catch {
         try {
             $os = Get-WmiObject Win32_OperatingSystem -ErrorAction Stop
@@ -228,1096 +301,1151 @@ function Get-WindowsInfo {
             $versionText = [string]$os.Version
             $architecture = [string]$os.OSArchitecture
             $productType = $os.ProductType
-            $sku = $os.OperatingSystemSKU
-        } catch {}
+        } catch {
+            $registryInfo = Get-WindowsRegistryFallback
+            if ($null -ne $registryInfo) {
+                $caption = [string]$registryInfo.Caption
+                $versionText = [string]$registryInfo.VersionText
+                $productType = $registryInfo.ProductType
+            }
+            if ([string]::IsNullOrWhiteSpace($versionText)) {
+                $versionText = [Environment]::OSVersion.Version.ToString()
+            }
+            $architecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
+        }
     }
 
+    if ([string]::IsNullOrWhiteSpace($caption)) { $caption = "Microsoft Windows" }
     if ([string]::IsNullOrWhiteSpace($versionText)) {
-        $versionText = [Environment]::OSVersion.Version.ToString()
-    }
-    if ([string]::IsNullOrWhiteSpace($architecture)) {
-        $architecture = $env:PROCESSOR_ARCHITECTURE
+        throw "无法可靠识别 Windows 版本，已安全停止。"
     }
 
     return [pscustomobject]@{
         Caption = $caption
-        Version = [version]$versionText
+        Version = (New-Object -TypeName System.Version -ArgumentList @($versionText))
         Architecture = $architecture
         ProductType = $productType
-        OperatingSystemSKU = $sku
     }
 }
 
-function Get-NormalizedArch {
-    if (-not [string]::IsNullOrWhiteSpace($TestArch)) {
-        switch -Regex ($TestArch.Trim()) {
-            "^(x64|amd64)$" { return "x64" }
-            "^arm64$" { return "arm64" }
-            default { return "unsupported" }
-        }
+function Get-NormalizedArchitecture {
+    param([string]$ReportedArchitecture)
+
+    $raw = $TestArch
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432")
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        $raw = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        $raw = $ReportedArchitecture
     }
 
-    $arch = $env:PROCESSOR_ARCHITEW6432
-    if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $env:PROCESSOR_ARCHITECTURE }
-    switch -Regex ($arch) {
-        "AMD64" { return "x64" }
-        "ARM64" { return "arm64" }
+    switch -Regex ($raw.Trim()) {
+        '^(?i:x64|amd64|x86_64|64-bit)$' { return "x64" }
+        '^(?i:arm64|aarch64|arm64-based pc)$' { return "arm64" }
         default { return "unsupported" }
     }
 }
 
-function Compare-VersionPart {
-    param([version]$Version, [int]$Major, [int]$Minor)
-    if ($Version.Major -gt $Major) { return 1 }
-    if ($Version.Major -lt $Major) { return -1 }
-    if ($Version.Minor -gt $Minor) { return 1 }
-    if ($Version.Minor -lt $Minor) { return -1 }
-    return 0
-}
-
-function Get-InstallMode {
-    param([pscustomobject]$OsInfo, [string]$Arch)
-
-    if ($Arch -eq "unsupported") {
-        throw "当前脚本只支持 x64 / ARM64。Codex 官方 npm 包未发布 32 位 Windows 版本。"
-    }
-
-    $v = $OsInfo.Version
-    if ($v.Major -ge 10) {
-        return [pscustomobject]@{
-            Name = "Modern"
-            DisplayName = "Windows 10/11 现代路径"
-            IsLegacy = $false
-            IsWin8 = $false
-            IsWin81 = $false
-        }
-    }
-
-    if ($v.Major -eq 6 -and $v.Minor -eq 3) {
-        if ($Arch -ne "x64") { throw "Windows 8.1 兼容路径只支持 x64。" }
-        return [pscustomobject]@{
-            Name = "LegacyWin81"
-            DisplayName = "Windows 8.1 旧版依赖路径"
-            IsLegacy = $true
-            IsWin8 = $false
-            IsWin81 = $true
-        }
-    }
-
-    if ($v.Major -eq 6 -and $v.Minor -eq 2) {
-        if ($Arch -ne "x64") { throw "Windows 8 兼容路径只支持 x64。" }
-        return [pscustomobject]@{
-            Name = "LegacyWin8"
-            DisplayName = "Windows 8 旧版依赖路径"
-            IsLegacy = $true
-            IsWin8 = $true
-            IsWin81 = $false
-        }
-    }
-
-    throw "不支持的 Windows 版本：$($OsInfo.Caption) $($OsInfo.Version)。请使用 Windows 8/8.1/10/11。"
-}
-
-function New-DownloadPlan {
+function Assert-SupportedEnvironment {
     param(
-        [pscustomobject]$Mode,
-        [string]$Arch
+        [pscustomobject]$OsInfo,
+        [string]$Architecture
     )
 
-    $mirror = Get-DownloadMirror
-
-    if ($Mode.IsLegacy) {
-        $gitFile = "Git-$LegacyGitVersion-64-bit.exe"
-        $nodeFile = "node-v$LegacyNodeVersion-x64.msi"
-        $pythonVersion = $(if ($Mode.IsWin81) { $LegacyPythonWin81Version } else { $LegacyPythonWin8Version })
-        $pythonFile = "python-$pythonVersion-amd64.exe"
-        $gitOfficialUrl = "https://github.com/git-for-windows/git/releases/download/$LegacyGitTag/$gitFile"
-        $nodeOfficialUrl = "https://nodejs.org/dist/v$LegacyNodeVersion/$nodeFile"
-        $pythonOfficialUrl = "https://www.python.org/ftp/python/$pythonVersion/$pythonFile"
-        $gitChinaUrl = "https://npmmirror.com/mirrors/git-for-windows/$LegacyGitTag/$gitFile"
-        $nodeChinaUrl = "https://npmmirror.com/mirrors/node/v$LegacyNodeVersion/$nodeFile"
-        $pythonChinaUrl = "https://npmmirror.com/mirrors/python/$pythonVersion/$pythonFile"
-
-        $plan = [ordered]@{
-            GitUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "GitUrl" -EnvName "CODEX_GIT_URL") -ChinaUrl $gitChinaUrl -OfficialUrl $gitOfficialUrl -Mirror $mirror
-            NodeUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "NodeUrl" -EnvName "CODEX_NODE_URL") -ChinaUrl $nodeChinaUrl -OfficialUrl $nodeOfficialUrl -Mirror $mirror
-            PythonUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "PythonUrl" -EnvName "CODEX_PYTHON_URL") -ChinaUrl $pythonChinaUrl -OfficialUrl $pythonOfficialUrl -Mirror $mirror
-            GitFile = $gitFile
-            NodeFile = $nodeFile
-            PythonFile = $pythonFile
-            RequiredNodeMajor = 16
-            RequiredPython = $pythonVersion
-            DownloadMirror = $mirror
-        }
-    } else {
-        $defaultNodeVersion = $(if ($UseLatestDependencies) { $LatestNodeVersion } else { $ModernNodeVersion })
-        $defaultPythonVersion = $(if ($UseLatestDependencies) { $LatestPythonVersion } else { $ModernPythonVersion })
-        $nodeVersion = Get-ConfigValue -Name "NodeVersion" -EnvName "CODEX_NODE_VERSION" -DefaultValue $defaultNodeVersion
-        $pythonVersion = Get-ConfigValue -Name "PythonVersion" -EnvName "CODEX_PYTHON_VERSION" -DefaultValue $defaultPythonVersion
-
-        $gitFile = $(if ($Arch -eq "arm64") { "Git-$ModernGitVersion-arm64.exe" } else { "Git-$ModernGitVersion-64-bit.exe" })
-        $nodeFile = "node-v$nodeVersion-$Arch.msi"
-        $pythonArch = $(if ($Arch -eq "arm64") { "arm64" } else { "amd64" })
-        $pythonFile = "python-$pythonVersion-$pythonArch.exe"
-        $gitOfficialUrl = "https://github.com/git-for-windows/git/releases/download/$ModernGitTag/$gitFile"
-        $nodeOfficialUrl = "https://nodejs.org/dist/v$nodeVersion/$nodeFile"
-        $pythonOfficialUrl = "https://www.python.org/ftp/python/$pythonVersion/$pythonFile"
-        $gitChinaUrl = "https://npmmirror.com/mirrors/git-for-windows/$ModernGitTag/$gitFile"
-        $nodeChinaUrl = "https://npmmirror.com/mirrors/node/v$nodeVersion/$nodeFile"
-        $pythonChinaUrl = "https://npmmirror.com/mirrors/python/$pythonVersion/$pythonFile"
-
-        $plan = [ordered]@{
-            GitUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "GitUrl" -EnvName "CODEX_GIT_URL") -ChinaUrl $gitChinaUrl -OfficialUrl $gitOfficialUrl -Mirror $mirror
-            NodeUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "NodeUrl" -EnvName "CODEX_NODE_URL") -ChinaUrl $nodeChinaUrl -OfficialUrl $nodeOfficialUrl -Mirror $mirror
-            PythonUrls = New-UrlCandidates -OverrideUrl (Get-UrlOverride -Name "PythonUrl" -EnvName "CODEX_PYTHON_URL") -ChinaUrl $pythonChinaUrl -OfficialUrl $pythonOfficialUrl -Mirror $mirror
-            GitFile = $gitFile
-            NodeFile = $nodeFile
-            PythonFile = $pythonFile
-            RequiredNodeMajor = 16
-            RequiredPython = $pythonVersion
-            DownloadMirror = $mirror
-        }
+    if ($PSVersionTable.PSVersion.Major -lt 5) {
+        throw "需要 Windows PowerShell 5.1 或更高版本。"
     }
-
-    $plan["GitUrl"] = @($plan["GitUrls"])[0]
-    $plan["NodeUrl"] = @($plan["NodeUrls"])[0]
-    $plan["PythonUrl"] = @($plan["PythonUrls"])[0]
-    $plan["SkillsUrl"] = Get-ConfigValue -Name "SkillsUrl" -EnvName "CODEX_SKILLS_URL" -DefaultValue ""
-    $plan["CodexAppUrl"] = Get-ConfigValue -Name "CodexAppUrl" -EnvName "CODEX_APP_INSTALLER_URL" -DefaultValue ""
-    $defaultNpmRegistry = $(if ($mirror -eq "china") { "https://registry.npmmirror.com" } else { "" })
-    $plan["NpmRegistry"] = Get-ConfigValue -Name "NpmRegistry" -EnvName "CODEX_NPM_REGISTRY" -DefaultValue $defaultNpmRegistry
-    $plan["CodexBaseUrl"] = Get-ConfigValue -Name "CodexBaseUrl" -EnvName "CODEX_BASE_URL" -DefaultValue ""
-    $plan["CodexModel"] = Get-ConfigValue -Name "CodexModel" -EnvName "CODEX_MODEL" -DefaultValue ""
-
-    return [pscustomobject]$plan
-}
-
-function Get-UrlFileName {
-    param([string]$Url, [string]$Fallback)
+    if ($PSVersionTable.PSVersion.Major -eq 5 -and $PSVersionTable.PSVersion.Minor -lt 1) {
+        throw "需要 Windows PowerShell 5.1 或更高版本。"
+    }
+    if ($null -eq $OsInfo.ProductType) {
+        throw "无法通过 CIM、WMI 或 Windows 注册表可靠确认客户端 ProductType，已安全停止。"
+    }
     try {
-        $uri = [Uri]$Url
-        $name = [Uri]::UnescapeDataString([IO.Path]::GetFileName($uri.AbsolutePath))
-        if (-not [string]::IsNullOrWhiteSpace($name)) { return $name }
-    } catch {}
-    return $Fallback
-}
-
-function Write-PlanSummary {
-    param([pscustomobject]$Plan)
-
-    Write-Step "$($ActionPlanName)计划"
-    Write-Host "运行模式：$ActionName" -ForegroundColor White
-    if ($Update) {
-        Write-Host "更新范围：Codex CLI、可选 Codex Windows App、可选 Skills" -ForegroundColor White
-        if ($UpdateDependencies) {
-            Write-Host "依赖策略：更新 Git / Node.js / Python 到当前计划版本" -ForegroundColor White
-        } else {
-            Write-Host "依赖策略：默认只补缺，不强制升级 Git / Node.js / Python" -ForegroundColor White
-        }
-    }
-    if ($Force) {
-        Write-Host "强制安装：已启用，将跳过“已安装可用则不重装”的保护" -ForegroundColor DarkYellow
-    }
-    if ($Reconfigure) {
-        Write-Host "配置策略：已启用 -Reconfigure，会备份后重写 Codex 配置/认证文件" -ForegroundColor DarkYellow
-    } elseif ($SkipConfig) {
-        Write-Host "配置策略：已启用 -SkipConfig，不写入 Codex 配置/认证文件" -ForegroundColor DarkYellow
-    } else {
-        Write-Host "配置策略：默认保留已有 config.toml / auth.json，只在缺失时补写" -ForegroundColor White
-    }
-    Write-Host "下载源模式：$($Plan.DownloadMirror)" -ForegroundColor White
-    Write-Host "Git 安装包：$($Plan.GitFile)" -ForegroundColor White
-    foreach ($url in @($Plan.GitUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
-    Write-Host "Node.js 安装包：$($Plan.NodeFile)" -ForegroundColor White
-    foreach ($url in @($Plan.NodeUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
-    Write-Host "Python 安装包：$($Plan.PythonFile)" -ForegroundColor White
-    foreach ($url in @($Plan.PythonUrls)) { Write-Host "  - $url" -ForegroundColor DarkGray }
-    if (-not [string]::IsNullOrWhiteSpace($Plan.NpmRegistry)) {
-        Write-Host "npm registry：$($Plan.NpmRegistry)" -ForegroundColor White
-    }
-    if (-not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
-        Write-Host "Codex Skills：$($Plan.SkillsUrl)" -ForegroundColor White
-    }
-    Write-Host "Codex Windows App：默认使用 Microsoft Store / winget install Codex -s msstore（300 秒超时）" -ForegroundColor White
-    $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
-    if (Test-Path $localAppInstaller) {
-        Write-Host "Codex Windows App 兜底：同目录 Codex Installer.exe" -ForegroundColor White
-    }
-    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
-        Write-Host "Codex Windows App 自定义兜底：$($Plan.CodexAppUrl)" -ForegroundColor White
-    }
-}
-
-function Test-DownloadUrl {
-    param(
-        [string]$Name,
-        [string]$Url
-    )
-
-    try {
-        $response = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 10
-        if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
-            Write-Host "$Name 可访问：$Url" -ForegroundColor Green
-            return $true
-        }
+        $productTypeValue = [int]$OsInfo.ProductType
     } catch {
-        Write-Host "$Name 当前不可访问：$Url" -ForegroundColor DarkYellow
-        Write-Host "  $($_.Exception.Message)" -ForegroundColor DarkGray
+        throw "无法可靠解析 Windows ProductType，已安全停止。"
     }
-    return $false
+    if ($productTypeValue -in @(2, 3)) {
+        throw "当前仅支持 Windows 10/11 客户端；Windows Server 尚未支持。"
+    }
+    if ($productTypeValue -ne 1) {
+        throw "无法确认受支持的客户端 ProductType（实际：$productTypeValue），已安全停止。"
+    }
+    if ($Architecture -notin @("x64", "arm64")) {
+        throw "仅支持 64 位 Windows x64/ARM64；32 位系统已安全停止。"
+    }
+
+    $version = $OsInfo.Version
+    if ($version.Major -lt 10 -or ($version.Major -eq 10 -and $version.Build -lt 17763)) {
+        throw "不支持 $($OsInfo.Caption) $version。最低为 Windows 10 build 17763；Windows 8/8.1 不再支持。"
+    }
+    if ($version.Major -gt 10) {
+        throw "尚未识别的 Windows 主版本：$version。为避免不安全安装，已安全停止。"
+    }
+
+    if ($version.Build -ge 22000) {
+        Write-Success "系统支持：Windows 11 或更高版本（推荐）。"
+    } else {
+        Write-Warn "Windows 10 build $($version.Build) 仅提供 best-effort 支持；建议升级到 Windows 11。"
+    }
 }
 
-function Test-DownloadPlan {
+function Show-Plan {
     param(
-        [pscustomobject]$Plan,
-        [bool]$IncludeGit,
-        [bool]$IncludePython,
-        [bool]$IncludeSkills,
-        [bool]$IncludeCodexApp
+        [pscustomobject]$OsInfo,
+        [string]$Architecture,
+        [bool]$DesktopRequested
     )
 
-    Write-Step "下载源可达性检查"
-    $checks = New-Object System.Collections.Generic.List[object]
-    if ($IncludeGit) { $checks.Add([pscustomobject]@{ Name = "Git for Windows"; Urls = @($Plan.GitUrls) }) }
-    $checks.Add([pscustomobject]@{ Name = "Node.js"; Urls = @($Plan.NodeUrls) })
-    if ($IncludePython) { $checks.Add([pscustomobject]@{ Name = "Python"; Urls = @($Plan.PythonUrls) }) }
-    if ($IncludeSkills -and -not [string]::IsNullOrWhiteSpace($Plan.SkillsUrl)) {
-        $checks.Add([pscustomobject]@{ Name = "Codex Skills"; Urls = @($Plan.SkillsUrl) })
+    Write-Step "系统与执行计划"
+    Write-Line "系统：$($OsInfo.Caption) $($OsInfo.Version)" White
+    Write-Line "架构：$Architecture" White
+    Write-Line "操作：Codex CLI $ActionName" White
+    Write-Line "CLI 安装方式：$CliMethod" White
+    Write-Line "CLI 版本：$($Release.Trim())" White
+    if ($CliMethod -eq "standalone") {
+        Write-Line "官方 bootstrap：$(Get-SafeUrl $OfficialBootstrapUrl)" White
+        Write-Line "官方发布通道：$(Get-SafeUrl $OfficialLatestChannelUrl)" DarkGray
+    } elseif (-not [string]::IsNullOrWhiteSpace($NpmRegistry)) {
+        Write-Line "npm registry（仅本次 npm 子进程环境，不写 .npmrc）：$(Get-SafeUrl $NpmRegistry)" White
+    } else {
+        Write-Line "npm registry：npm 当前默认值（不会永久修改）" White
     }
-    if ($IncludeCodexApp) {
-        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
-            $checks.Add([pscustomobject]@{ Name = "Codex Windows App"; Urls = @($Plan.CodexAppUrl) })
+    Write-Line "开发工具补缺：$(if ($InstallDevTools) { '是' } else { '否' })" White
+    Write-Line "ChatGPT desktop app：$(if ($DesktopRequested) { '安装/更新' } else { '跳过' })" White
+    if ($RequireDesktopApp) {
+        Write-Line "ChatGPT desktop app：失败将使整体失败" DarkYellow
+    }
+    if ($CheckOnly) {
+        Write-Line "CheckOnly：不会安装、不会修改用户配置或用户目录。" Green
+        if ($VerifyDownloads) {
+            Write-Line "VerifyDownloads：将仅在随机私有临时目录下载并验证官方 bootstrap，然后清理下载文件。" DarkYellow
         } else {
-            Write-Info "Codex Windows App 默认通过 Microsoft Store / winget 获取，预检不对 Store 包执行 URL HEAD 检查。"
+            Write-Line "下载：跳过。" Green
+        }
+    }
+}
+
+function New-PrivateWorkDirectory {
+    $tempRoot = [System.IO.Path]::GetTempPath()
+    if ([string]::IsNullOrWhiteSpace($tempRoot)) {
+        throw "无法确定系统临时目录。"
+    }
+
+    $path = Join-Path $tempRoot ("codex-installer-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+
+    if ([Environment]::GetEnvironmentVariable("OS") -eq "Windows_NT") {
+        try {
+            $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+            if ($null -eq $currentSid) { throw "无法识别当前用户 SID。" }
+
+            $acl = Get-Acl -LiteralPath $path
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($existingRule in @($acl.Access)) {
+                $acl.RemoveAccessRuleSpecific($existingRule)
+            }
+            $acl.SetOwner($currentSid)
+
+            $systemSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList @("S-1-5-18")
+            $administratorsSid = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList @("S-1-5-32-544")
+            foreach ($sid in @($currentSid, $systemSid, $administratorsSid)) {
+                $ruleArguments = @(
+                    $sid,
+                    [System.Security.AccessControl.FileSystemRights]::FullControl,
+                    ([System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit),
+                    [System.Security.AccessControl.PropagationFlags]::None,
+                    [System.Security.AccessControl.AccessControlType]::Allow
+                )
+                $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule -ArgumentList $ruleArguments
+                $acl.AddAccessRule($accessRule)
+            }
+            Set-Acl -LiteralPath $path -AclObject $acl
+        } catch {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue
+            throw "无法为临时目录设置私有 ACL，已安全停止：$($_.Exception.Message)"
         }
     }
 
-    foreach ($check in $checks) {
-        $ok = $false
-        foreach ($url in @($check.Urls)) {
-            if (Test-DownloadUrl -Name $check.Name -Url $url) {
-                $ok = $true
-                break
-            }
-        }
-        if (-not $ok) {
-            throw "$($check.Name) 所有下载源都不可访问。请检查网络/代理，或在 downloads.local.json 中配置可访问的下载地址。"
-        }
-    }
+    return $path
+}
+
+function Initialize-PrivateLog {
+    param([string]$Directory)
+
+    $script:LogFile = Join-Path $Directory "install.log"
+    Set-Content -LiteralPath $script:LogFile -Value "" -Encoding UTF8
+}
+
+function Enable-Tls12 {
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+    } catch {}
 }
 
 function Download-File {
     param(
         [Parameter(Mandatory=$true)][string]$Name,
-        [Parameter(Mandatory=$true)][string[]]$Url,
+        [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][string]$OutFile,
-        [long]$MinBytes = 1048576
+        [long]$MinimumBytes = 1,
+        [Parameter(Mandatory=$true)][long]$MaximumBytes
     )
+
     Write-Step "下载 $Name"
-    if (Test-Path $OutFile) {
-        $size = (Get-Item $OutFile).Length
-        if ($size -ge $MinBytes) {
-            Write-Host "已存在，跳过下载：$OutFile" -ForegroundColor DarkYellow
-            return
-        }
+    Write-Line "来源：$(Get-SafeUrl $Url)" DarkGray
+
+    if ($MinimumBytes -lt 1 -or $MaximumBytes -lt $MinimumBytes) {
+        throw "$Name 下载大小边界无效。"
     }
 
-    $lastError = $null
-    foreach ($candidateUrl in @($Url)) {
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
-            try {
-                Write-Host "来源：$candidateUrl" -ForegroundColor DarkGray
-                if ($attempt -gt 1) { Write-Host "第 $attempt 次重试..." -ForegroundColor DarkYellow }
-                Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
-                Invoke-WebRequest -Uri $candidateUrl -OutFile $OutFile -UseBasicParsing -TimeoutSec 180 -MaximumRedirection 10
-
-                if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -ge $MinBytes)) {
-                    Write-Host "下载完成：$OutFile" -ForegroundColor Green
-                    return
-                }
-                throw "下载文件小于 $MinBytes 字节，可能是错误页或被代理拦截。"
-            } catch {
-                $lastError = $_.Exception.Message
-                Write-Warning "$Name 下载失败：$lastError"
-                Remove-Item -Force $OutFile -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds (2 * $attempt)
-            }
-        }
-
-        Write-Warning "$Name 当前来源不可用，尝试下一个来源。"
-    }
-
-    throw "下载失败或文件异常：$Name -> $OutFile。最后错误：$lastError"
-}
-
-function Start-Installer {
-    param(
-        [Parameter(Mandatory=$true)][string]$Name,
-        [Parameter(Mandatory=$true)][string]$FilePath,
-        [Parameter(Mandatory=$true)][string]$Arguments
-    )
-    Write-Step "安装 $Name"
-    Write-Host "执行：$FilePath $Arguments"
-    $p = Start-Process -FilePath $FilePath -ArgumentList $Arguments -Wait -PassThru
-    if ($p.ExitCode -notin @(0, 3010, 1641)) {
-        throw "$Name 安装失败，ExitCode=$($p.ExitCode)"
-    }
-    Write-Host "$Name 安装完成" -ForegroundColor Green
-}
-
-function Refresh-Path {
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path = "$machinePath;$userPath"
-}
-
-function Get-InstalledVersion {
-    param(
-        [string]$Command,
-        [string]$Arguments = "--version"
-    )
-    $cmd = Get-CommandPath $Command
-    if (-not $cmd) { return $null }
     try {
-        $out = & $cmd $Arguments 2>&1
-        $text = ($out -join " ")
-        if ($text -match "(\d+)\.(\d+)\.(\d+)") {
-            return [version]$matches[0]
+        $sourceUri = New-Object -TypeName System.Uri -ArgumentList @($Url)
+    } catch {
+        throw "$Name 下载地址无效。"
+    }
+    if (-not $sourceUri.IsAbsoluteUri -or $sourceUri.Scheme -cne "https") {
+        throw "$Name 仅允许从 HTTPS 绝对 URL 下载。"
+    }
+
+    $request = $null
+    $response = $null
+    $inputStream = $null
+    $outputStream = $null
+    $downloadError = $null
+    [long]$totalBytes = 0
+
+    try {
+        # HttpWebRequest 在 Windows PowerShell 5.1 可用，并沿用 Windows 的系统代理、
+        # 证书存储与 TLS 校验。逐块写入可在响应未提供 Content-Length 时仍强制上限。
+        $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($sourceUri)
+        $request.Method = "GET"
+        $request.AllowAutoRedirect = $true
+        $request.MaximumAutomaticRedirections = 10
+        $request.Timeout = 300000
+        $request.ReadWriteTimeout = 300000
+        $request.UserAgent = "codex-one-click-installer/2.0"
+        $request.AutomaticDecompression = (
+            [System.Net.DecompressionMethods]::GZip -bor
+            [System.Net.DecompressionMethods]::Deflate
+        )
+
+        $response = [System.Net.HttpWebResponse]$request.GetResponse()
+        $finalUri = $response.ResponseUri
+        if ($null -eq $finalUri -or -not $finalUri.IsAbsoluteUri -or $finalUri.Scheme -cne "https") {
+            throw "$Name 最终响应地址不是 HTTPS，已拒绝保存。"
         }
-    } catch {}
+
+        $statusCode = [int]$response.StatusCode
+        if ($statusCode -lt 200 -or $statusCode -ge 300) {
+            throw "$Name 下载返回 HTTP $statusCode。"
+        }
+        if ($response.ContentLength -gt $MaximumBytes) {
+            throw "$Name 声明大小超过上限 $MaximumBytes 字节。"
+        }
+
+        $inputStream = $response.GetResponseStream()
+        if ($null -eq $inputStream) {
+            throw "$Name 下载响应没有可读取的数据流。"
+        }
+        $outputStream = [System.IO.File]::Open(
+            $OutFile,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $buffer = New-Object byte[] 65536
+        while (($bytesRead = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            if ($totalBytes + [long]$bytesRead -gt $MaximumBytes) {
+                throw "$Name 实际大小超过上限 $MaximumBytes 字节。"
+            }
+            $outputStream.Write($buffer, 0, $bytesRead)
+            $totalBytes += [long]$bytesRead
+        }
+        $outputStream.Flush()
+    } catch {
+        $downloadError = $_.Exception
+    } finally {
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+        if ($null -ne $inputStream) { $inputStream.Dispose() }
+        if ($null -ne $response) { $response.Dispose() }
+    }
+
+    if ($null -ne $downloadError) {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        throw "$Name 下载失败：$(Protect-LogText $downloadError.Message)"
+    }
+
+    if (-not (Test-Path -LiteralPath $OutFile -PathType Leaf)) {
+        throw "$Name 下载后文件不存在。"
+    }
+    $length = (Get-Item -LiteralPath $OutFile).Length
+    if ($length -lt $MinimumBytes -or $length -gt $MaximumBytes) {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        throw "$Name 下载大小超出允许范围（实际 $length 字节；允许 $MinimumBytes..$MaximumBytes 字节）。"
+    }
+    Write-Success "$Name 下载完成（$length 字节）。"
+}
+
+function Test-OfficialBootstrap {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$ExpectedSha256
+    )
+
+    Write-Step "验证官方 bootstrap"
+    $item = Get-Item -LiteralPath $Path
+    if ($item.Length -lt 4096 -or $item.Length -gt 2097152) {
+        throw "官方 bootstrap 大小异常：$($item.Length) 字节。"
+    }
+
+    $content = Get-Content -LiteralPath $Path -Raw
+    if ($content -match '(?i)<!doctype\s+html|<html(?:\s|>)') {
+        throw "官方 bootstrap 下载结果疑似 HTML 错误页。"
+    }
+
+    $requiredMarkers = @(
+        "[CmdletBinding()]",
+        '$Release',
+        "Get-FileHash",
+        "SHA256",
+        "Invoke-WithInstallLock",
+        "releases.openai.com/codex"
+    )
+    foreach ($marker in $requiredMarkers) {
+        if (-not $content.Contains($marker)) {
+            throw "官方 bootstrap 缺少预期安全标记：$marker"
+        }
+    }
+
+    $actualSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+        $expected = $ExpectedSha256.Trim().ToLowerInvariant()
+        if ($actualSha256 -cne $expected) {
+            throw "官方 bootstrap SHA-256 不匹配。Expected=$expected Actual=$actualSha256"
+        }
+        Write-Success "官方 bootstrap SHA-256 与指定值一致：$actualSha256"
+    } else {
+        Write-Success "官方 bootstrap 内容检查通过；SHA-256：$actualSha256"
+        Write-Info "未固定 bootstrap 摘要；传入 -BootstrapSha256 可进行精确摘要校验。"
+    }
+
+    return $actualSha256
+}
+
+function Get-CommandPath {
+    param([string[]]$Candidates)
+
+    foreach ($candidate in $Candidates) {
+        $command = Get-Command -Name $candidate -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $command) {
+            return $command.Path
+        }
+    }
     return $null
 }
 
-function Get-CodexStatus {
-    Refresh-Path
-    $cmd = Get-CommandPath "codex"
-    $status = [ordered]@{
-        IsInstalled = $false
-        IsUsable = $false
-        Path = $cmd
-        VersionText = ""
-        Error = ""
+function Refresh-ProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $currentPath = $env:Path
+    $segments = New-Object System.Collections.Generic.List[string]
+    foreach ($pathValue in @($machinePath, $userPath, $currentPath)) {
+        if ([string]::IsNullOrWhiteSpace($pathValue)) { continue }
+        foreach ($segment in $pathValue.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries)) {
+            $trimmed = $segment.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed) -and $segments -notcontains $trimmed) {
+                $segments.Add($trimmed)
+            }
+        }
     }
+    if ($segments.Count -gt 0) {
+        $env:Path = $segments -join ";"
+    }
+}
 
-    if (-not $cmd) { return [pscustomobject]$status }
+function Test-CommandSucceeds {
+    param(
+        [string[]]$Candidates,
+        [string[]]$Arguments
+    )
 
-    $status.IsInstalled = $true
+    $path = Get-CommandPath -Candidates $Candidates
+    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+
+    $oldPreference = $ErrorActionPreference
     try {
-        $global:LASTEXITCODE = $null
-        $out = & $cmd "--version" 2>&1
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $null = & $path @Arguments 2>&1
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldPreference
+    }
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string[]]$Arguments = @(),
+        [Parameter(Mandatory=$true)][string]$DisplayName
+    )
+
+    Write-Info "执行：$DisplayName"
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $output = @(& $Path @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
-        $text = ($out -join " ").Trim()
-        $status.VersionText = $text
-        if (($null -eq $exitCode -or $exitCode -eq 0) -and -not [string]::IsNullOrWhiteSpace($text)) {
-            $status.IsUsable = $true
-        } elseif ($null -ne $exitCode -and $exitCode -ne 0) {
-            $status.Error = "ExitCode=$exitCode $text"
-        }
     } catch {
-        $status.Error = $_.Exception.Message
+        $output = @($_.Exception.Message)
+        $exitCode = 1
+    } finally {
+        $ErrorActionPreference = $oldPreference
     }
-
-    return [pscustomobject]$status
-}
-
-function Test-NodeReady {
-    $ver = Get-InstalledVersion -Command "node" -Arguments "-v"
-    if ($ver -and $ver.Major -ge 16) { return $true }
-    return $false
-}
-
-function Test-PythonReady {
-    $ver = Get-InstalledVersion -Command "python" -Arguments "--version"
-    if ($ver -and $ver.Major -ge 3) { return $true }
-    return $false
-}
-
-function Get-MaskedUrl {
-    param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
-    return ($Value -replace "://[^/@]+@", "://***@")
-}
-
-function Invoke-EnvironmentPreflight {
-    param(
-        [pscustomobject]$OsInfo,
-        [string]$Arch,
-        [pscustomobject]$Mode
-    )
-
-    Write-Step "系统环境预检"
-    Write-Host "PowerShell：$($PSVersionTable.PSVersion)" -ForegroundColor White
-    if ($PSVersionTable.PSVersion.Major -lt 5) {
-        Write-Warning "当前 PowerShell 版本较旧。Windows 10 通常自带 5.1；如果后续出现语法或下载异常，请先升级 Windows PowerShell 5.1。"
-    }
-
-    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
-        Write-Warning "当前在 32 位 PowerShell 进程中运行。脚本会尽量处理，但建议使用 64 位 PowerShell 运行，避免安装路径和注册表重定向问题。"
-    }
-
-    if (-not $CheckOnly) {
-        if (Test-Admin) {
-            Write-Host "管理员权限：已获取" -ForegroundColor Green
-        } else {
-            Write-Warning "管理员权限：未获取。安装 Git/Node/Python 通常需要管理员权限。"
-        }
-    } else {
-        Write-Host "管理员权限：CheckOnly 模式不要求" -ForegroundColor DarkGray
-    }
-
-    if ($SkipCodexApp) {
-        Write-Host "winget：已使用 -SkipCodexApp，跳过 Codex Windows App 路径检查" -ForegroundColor DarkGray
-    } else {
-        $winget = Get-CommandPath "winget"
-        if ($winget) {
-            Write-Host "winget：已检测到，可用于官方 Microsoft Store 路径安装/更新 Codex Windows App" -ForegroundColor Green
-        } else {
-            Write-Warning "winget：未检测到。Codex Windows App 默认 Store 安装路径可能不可用；CLI、Git、Node.js、Python 安装不受影响。"
-        }
-    }
-
-    if ($OsInfo.ProductType -and ([int]$OsInfo.ProductType -ne 1)) {
-        Write-Warning "当前看起来是 Windows Server。脚本主要面向 Windows 10/11 桌面版；Server runner 可用于 CI 预检，但不能完全等价于 Win10 专业版/企业版。"
-    }
-
-    if ($OsInfo.Caption -match "Enterprise|LTSC|LTSB") {
-        Write-Warning "检测到企业版/LTSC/LTSB 字样。公司镜像常见限制包括代理、TLS 拦截、UAC、组策略禁止 MSI、npm registry 被拦截；如失败请优先查看日志里的下载源和 ExitCode。"
-    }
-
-    if ($OsInfo.Version.Major -eq 10 -and $OsInfo.Version.Build -gt 0 -and $OsInfo.Version.Build -lt 19045) {
-        Write-Warning "当前 Windows 10 Build 为 $($OsInfo.Version.Build)，低于 22H2 常见 Build 19045。脚本会继续，但较旧 LTSC/企业镜像可能需要公司 IT 放行 TLS/证书/安装策略。"
-    }
-
-    if ($Arch -eq "arm64" -and $OsInfo.Version.Build -gt 0 -and $OsInfo.Version.Build -lt 22000) {
-        Write-Warning "Windows ARM64 建议使用 Windows 11。Windows 10 ARM64 自动安装 Git 的兼容性较差。"
-    }
-
-    try {
-        $probe = Join-Path $WorkDir "write-test.tmp"
-        Set-Content -Path $probe -Value "ok" -Encoding ASCII
-        Remove-Item -Force $probe -ErrorAction SilentlyContinue
-        Write-Host "临时目录：可写，$WorkDir" -ForegroundColor Green
-    } catch {
-        throw "临时目录不可写：$WorkDir。请清理权限或手动设置 TEMP。详细错误：$($_.Exception.Message)"
-    }
-
-    try {
-        $drive = New-Object System.IO.DriveInfo([IO.Path]::GetPathRoot($WorkDir))
-        $freeGb = [math]::Round($drive.AvailableFreeSpace / 1GB, 1)
-        Write-Host "临时目录所在磁盘剩余空间：$freeGb GB" -ForegroundColor White
-        if ($freeGb -lt 3) {
-            Write-Warning "剩余空间偏低。完整下载安装 Git/Node/Python 建议至少预留 3GB。"
-        }
-    } catch {
-        Write-Warning "无法读取磁盘剩余空间：$($_.Exception.Message)"
-    }
-
-    $proxyNames = @("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
-    foreach ($name in $proxyNames) {
-        $value = [Environment]::GetEnvironmentVariable($name, "Process")
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            Write-Host "$name：$(Get-MaskedUrl $value)" -ForegroundColor DarkYellow
-        }
-    }
-
-    Write-Host "兼容路径：$($Mode.DisplayName)" -ForegroundColor White
-}
-
-function Write-Utf8NoBom {
-    param([string]$Path, [string]$Content)
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
-}
-
-function Get-SafeBackupName {
-    param([string]$Path)
-    return (($Path -replace "^[A-Za-z]:", "") -replace '[\\/:*?"<>|]', "_").Trim("_")
-}
-
-function Save-FileForRestore {
-    param([string]$Path)
-
-    foreach ($entry in $ConfigRestorePlan) {
-        if ($entry.Path -eq $Path) { return }
-    }
-
-    $parent = Split-Path -Parent $Path
-    if ([string]::IsNullOrWhiteSpace($parent)) { return }
-
-    $backupRoot = Join-Path $parent (Join-Path "backups" "installer-$RunStamp")
-    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-
-    $exists = Test-Path $Path
-    $backupPath = Join-Path $backupRoot (Get-SafeBackupName -Path $Path)
-    if ($exists) {
-        Copy-Item -Path $Path -Destination $backupPath -Force
-    }
-
-    $ConfigRestorePlan.Add([pscustomobject]@{
-        Path = $Path
-        BackupPath = $backupPath
-        Existed = $exists
-    }) | Out-Null
-}
-
-function Restore-SavedFiles {
-    if ($ConfigRestorePlan.Count -eq 0) { return }
-
-    Write-Warning "检测到安装流程失败，正在还原本次修改过的 Codex 配置文件..."
-    for ($i = $ConfigRestorePlan.Count - 1; $i -ge 0; $i--) {
-        $entry = $ConfigRestorePlan[$i]
-        try {
-            if ($entry.Existed) {
-                Copy-Item -Path $entry.BackupPath -Destination $entry.Path -Force
-                Write-Host "已还原：$($entry.Path)" -ForegroundColor DarkYellow
-            } else {
-                Remove-Item -Force $entry.Path -ErrorAction SilentlyContinue
-                Write-Host "已移除本次新建文件：$($entry.Path)" -ForegroundColor DarkYellow
-            }
-        } catch {
-            Write-Warning "还原失败：$($entry.Path)。详细错误：$($_.Exception.Message)"
-        }
-    }
-}
-
-function Complete-SavedFiles {
-    if ($ConfigRestorePlan.Count -eq 0) { return }
-
-    $backupRoots = @($ConfigRestorePlan | ForEach-Object { Split-Path -Parent $_.BackupPath } | Sort-Object -Unique)
-    foreach ($root in $backupRoots) {
-        if (-not [string]::IsNullOrWhiteSpace($root)) {
-            Write-Host "本次配置备份保留在：$root" -ForegroundColor DarkGray
-        }
-    }
-    $ConfigRestorePlan.Clear()
-}
-
-function Expand-ZipFile {
-    param([string]$ZipFile, [string]$Destination)
-
-    if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
-        Expand-Archive -Path $ZipFile -DestinationPath $Destination -Force
-        return
-    }
-
-    $shell = New-Object -ComObject Shell.Application
-    $zip = $shell.NameSpace($ZipFile)
-    $dest = $shell.NameSpace($Destination)
-    if (-not $zip -or -not $dest) { throw "无法解压：$ZipFile" }
-    $dest.CopyHere($zip.Items(), 0x14)
-    Start-Sleep -Seconds 2
-}
-
-function Install-Skills {
-    param([string]$ZipFile)
-    Write-Step "安装 Codex Skills"
-    $dest = Join-Path $HOME ".agents\skills"
-    $tmp = Join-Path $WorkDir "skills_unzip"
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $tmp, $dest | Out-Null
-
-    Expand-ZipFile -ZipFile $ZipFile -Destination $tmp
-    $skillDirs = @(Get-ChildItem -Path $tmp -Directory -Recurse | Where-Object { Test-Path (Join-Path $_.FullName "SKILL.md") })
-
-    if ($skillDirs.Count -gt 0) {
-        foreach ($dir in $skillDirs) {
-            $target = Join-Path $dest $dir.Name
-            Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
-            Copy-Item -Path $dir.FullName -Destination $target -Recurse -Force
-            Write-Host "已安装 Skill：$($dir.Name)" -ForegroundColor Green
-        }
-    } else {
-        Copy-Item -Path (Join-Path $tmp "*") -Destination $dest -Recurse -Force
-        Write-Host "未检测到 SKILL.md，已按普通目录解压到：$dest" -ForegroundColor Yellow
-    }
-}
-
-function Write-CodexConfig {
-    param(
-        [pscustomobject]$Plan,
-        [bool]$PromptForAuth = $true
-    )
-
-    Write-Step "写入 Codex 配置"
-    if ($SkipConfig) {
-        Write-Info "已启用 -SkipConfig，跳过 Codex 配置写入。"
-        return
-    }
-
-    $codexHome = Join-Path $HOME ".codex"
-    New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
-    $configPath = Join-Path $codexHome "config.toml"
-    $authPath = Join-Path $codexHome "auth.json"
-    $localAuthJson = Join-Path $ScriptDir "codex-auth.json"
-
-    if (Test-Path $configPath) {
-        if ($Reconfigure) {
-            Save-FileForRestore -Path $configPath
-            Write-Host "检测到已有 config.toml，-Reconfigure 已启用，将备份后重写。" -ForegroundColor DarkYellow
-        } else {
-            Write-Host "检测到已有 config.toml，默认保留，不重写：$configPath" -ForegroundColor DarkYellow
-            Write-Host "如需重新生成配置，请显式传入 -Reconfigure。" -ForegroundColor DarkGray
-        }
-    } else {
-        Save-FileForRestore -Path $configPath
-    }
-
-    if ((-not (Test-Path $configPath)) -or $Reconfigure) {
-        $lines = New-Object System.Collections.Generic.List[string]
-        $lines.Add('disable_response_storage = true')
-        $lines.Add('network_access = "enabled"')
-        $lines.Add('windows_wsl_setup_acknowledged = true')
-
-        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexModel)) {
-            $safeModel = $Plan.CodexModel.Replace('"', '\"')
-            $lines.Add(('model = "{0}"' -f $safeModel))
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($Plan.CodexBaseUrl)) {
-            $safeUrl = $Plan.CodexBaseUrl.Replace('"', '\"')
-            $lines.Add("")
-            $lines.Add("[model_providers.OpenAI]")
-            $lines.Add('name = "OpenAI"')
-            $lines.Add(('base_url = "{0}"' -f $safeUrl))
-            $lines.Add('wire_api = "responses"')
-            $lines.Add('requires_openai_auth = true')
-        }
-
-        Write-Utf8NoBom -Path $configPath -Content (($lines -join "`r`n") + "`r`n")
-        Write-Host "已写入：$configPath" -ForegroundColor Green
-    }
-
-    if (Test-Path $localAuthJson) {
-        if ((Test-Path $authPath) -and -not $Reconfigure) {
-            Write-Host "检测到已有 auth.json，默认不使用同目录 codex-auth.json 覆盖：$authPath" -ForegroundColor DarkYellow
-            Write-Host "如需覆盖认证文件，请显式传入 -Reconfigure。" -ForegroundColor DarkGray
-        } else {
-            Save-FileForRestore -Path $authPath
-            Copy-Item -Path $localAuthJson -Destination $authPath -Force
-            Write-Host "已从脚本同目录 codex-auth.json 写入认证文件：$authPath" -ForegroundColor Green
-        }
-    } elseif ($Update) {
-        if (Test-Path $authPath) {
-            Write-Host "更新模式：保留已有认证文件：$authPath" -ForegroundColor DarkYellow
-        } else {
-            Write-Host "更新模式：未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。" -ForegroundColor DarkYellow
-        }
-    } elseif ($NonInteractive) {
-        if (Test-Path $authPath) {
-            Write-Host "非交互模式：保留已有认证文件：$authPath" -ForegroundColor DarkYellow
-        } else {
-            Write-Host "非交互模式：未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。" -ForegroundColor DarkYellow
-        }
-    } elseif ((Test-Path $authPath) -and -not $Reconfigure) {
-        Write-Host "检测到已有 auth.json，默认保留，不追问、不覆盖：$authPath" -ForegroundColor DarkYellow
-    } else {
-        Write-Host ""
-        if ($PromptForAuth) {
-            Write-Host "请输入 OPENAI_API_KEY。直接回车则跳过，不覆盖已有 auth.json。" -ForegroundColor Yellow
-            $apiKey = Read-Host "OPENAI_API_KEY"
-            if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
-                Save-FileForRestore -Path $authPath
-                $auth = @{ OPENAI_API_KEY = $apiKey.Trim() } | ConvertTo-Json -Compress
-                Write-Utf8NoBom -Path $authPath -Content $auth
-                Write-Host "已写入：$authPath" -ForegroundColor Green
-            } elseif (Test-Path $authPath) {
-                Write-Host "保留已有认证文件：$authPath" -ForegroundColor DarkYellow
-            } else {
-                Write-Warning "未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。"
-            }
-        } else {
-            Write-Warning "未写入 auth.json。后续首次运行 codex 时需要手动登录或配置密钥。"
-        }
-    }
-}
-
-function Install-CodexCli {
-    param([pscustomobject]$Plan)
-
-    Write-Step "配置 npm 并安装/更新 Codex CLI"
-    try {
-        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-    } catch {
-        Write-Warning "设置 PowerShell ExecutionPolicy 失败，但会继续使用 npm.cmd 安装：$($_.Exception.Message)"
-    }
-
-    Refresh-Path
-    $npm = Get-CommandPath "npm.cmd"
-    if (-not $npm) {
-        $candidate = Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"
-        if (Test-Path $candidate) { $npm = $candidate }
-    }
-    if (-not $npm) { throw "未找到 npm.cmd，请确认 Node.js 安装成功。" }
-
-    $registries = New-Object System.Collections.Generic.List[string]
-    if (-not [string]::IsNullOrWhiteSpace($Plan.NpmRegistry)) {
-        $registries.Add($Plan.NpmRegistry)
-        if ($Plan.NpmRegistry -match "npmmirror") {
-            $registries.Add("https://registry.npmjs.org")
-        }
-    } else {
-        $registries.Add("")
-    }
-
-    $lastExit = 0
-    foreach ($registry in $registries) {
-        if (-not [string]::IsNullOrWhiteSpace($registry)) {
-            Write-Host "npm registry：$registry" -ForegroundColor White
-            & $npm config set registry $registry
-        }
-
-        & $npm install -g "@openai/codex@latest"
-        $lastExit = $LASTEXITCODE
-        if ($lastExit -eq 0) { return }
-
-        Write-Warning "npm install -g @openai/codex@latest 执行失败，ExitCode=$lastExit。"
-    }
-
-    throw "npm install -g @openai/codex@latest 执行失败。请检查 npm registry、代理、证书或公司网络策略。ExitCode=$lastExit"
-}
-
-function Invoke-WingetCodexAppCommand {
-    param(
-        [Parameter(Mandatory=$true)][string]$Winget,
-        [Parameter(Mandatory=$true)][string[]]$Arguments,
-        [int]$TimeoutSeconds = $CodexAppWingetTimeoutSeconds
-    )
-
-    Write-Host "执行：winget $($Arguments -join ' ')" -ForegroundColor White
-    Write-Host "超时保护：$TimeoutSeconds 秒内未完成则改用本地/自定义安装器兜底。" -ForegroundColor DarkGray
-
-    $runId = [guid]::NewGuid().ToString("N")
-    $stdoutFile = Join-Path $WorkDir "winget-$runId.out.log"
-    $stderrFile = Join-Path $WorkDir "winget-$runId.err.log"
-    $process = $null
-
-    try {
-        $process = Start-Process -FilePath $Winget -ArgumentList $Arguments -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -NoNewWindow -PassThru
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-            try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
-            throw "winget 执行超过 $TimeoutSeconds 秒，可能是 Microsoft Store 下载较慢或网络受限。"
-        }
-    } catch {
-        throw $_
-    }
-
-    $output = New-Object System.Collections.Generic.List[string]
-    if (Test-Path $stdoutFile) {
-        foreach ($line in (Get-Content -Path $stdoutFile -ErrorAction SilentlyContinue)) { $output.Add([string]$line) }
-    }
-    if (Test-Path $stderrFile) {
-        foreach ($line in (Get-Content -Path $stderrFile -ErrorAction SilentlyContinue)) { $output.Add([string]$line) }
-    }
-
-    $exitCode = $process.ExitCode
-    $text = ($output -join "`n").Trim()
 
     foreach ($line in @($output)) {
-        $lineText = [string]$line
-        if (-not [string]::IsNullOrWhiteSpace($lineText)) {
-            Write-Host $lineText -ForegroundColor DarkGray
+        $text = [string]$line
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            Write-Line $text DarkGray
         }
     }
 
-    if ($null -eq $exitCode -or $exitCode -eq 0) { return }
-
-    $knownOk = @(
-        "already installed",
-        "no applicable update",
-        "no available upgrade",
-        "已安装",
-        "没有可用",
-        "没有适用",
-        "无需更新"
-    )
-    foreach ($pattern in $knownOk) {
-        if ($text -match ([regex]::Escape($pattern))) {
-            Write-Info "winget 返回非零退出码，但输出显示 Codex App 已安装或无需更新。"
-            return
-        }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = (($output | ForEach-Object { Protect-LogText ([string]$_) }) -join "`n")
     }
-
-    throw "winget 执行失败：winget $($Arguments -join ' ')。ExitCode=$exitCode"
 }
 
-function Test-CodexAppInstalledByWinget {
-    param([Parameter(Mandatory=$true)][string]$Winget)
-
+function Get-ChildPowerShell {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add((Join-Path $PSHOME "powershell.exe"))
+    $candidates.Add((Join-Path $PSHOME "pwsh.exe"))
     try {
-        $global:LASTEXITCODE = $null
-        $output = & $Winget "list" "Codex" "--accept-source-agreements" 2>&1
-        $exitCode = $LASTEXITCODE
-        $text = ($output -join "`n")
-        if (($null -eq $exitCode -or $exitCode -eq 0) -and $text -match "(?im)^\s*Codex\s+") {
-            return $true
-        }
+        $processPath = (Get-Process -Id $PID -ErrorAction Stop).Path
+        if (-not [string]::IsNullOrWhiteSpace($processPath)) { $candidates.Add($processPath) }
     } catch {}
 
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+
+    $fallback = Get-CommandPath -Candidates @("powershell.exe", "pwsh.exe")
+    if ([string]::IsNullOrWhiteSpace($fallback)) {
+        throw "无法定位用于执行官方 bootstrap 的 PowerShell。"
+    }
+    return $fallback
+}
+
+function Invoke-StandaloneInstall {
+    param(
+        [string]$BootstrapPath,
+        [string]$RequestedRelease
+    )
+
+    Write-Step "通过官方 standalone bootstrap $ActionName Codex CLI"
+    $powerShell = Get-ChildPowerShell
+    $arguments = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $BootstrapPath,
+        "-Release",
+        $RequestedRelease.Trim()
+    )
+
+    $oldNonInteractive = [Environment]::GetEnvironmentVariable("CODEX_NON_INTERACTIVE", "Process")
+    $oldInstallDirectory = [Environment]::GetEnvironmentVariable("CODEX_INSTALL_DIR", "Process")
+    try {
+        if ($NonInteractive) {
+            [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", "1", "Process")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($script:ValidatedCodexInstallDir)) {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_INSTALL_DIR",
+                $script:ValidatedCodexInstallDir,
+                "Process"
+            )
+        }
+        $result = Invoke-NativeCommand -Path $powerShell -Arguments $arguments -DisplayName "官方 install.ps1 -Release $($RequestedRelease.Trim())"
+    } finally {
+        [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", $oldNonInteractive, "Process")
+        [Environment]::SetEnvironmentVariable("CODEX_INSTALL_DIR", $oldInstallDirectory, "Process")
+    }
+
+    if ($result.ExitCode -ne 0) {
+        throw "官方 standalone bootstrap 执行失败，ExitCode=$($result.ExitCode)。"
+    }
+}
+
+function Get-NpmRelease {
+    param([string]$RequestedRelease)
+
+    $value = $RequestedRelease.Trim()
+    if ($value.StartsWith("rust-v", [System.StringComparison]::Ordinal)) {
+        return $value.Substring(6)
+    }
+    if ($value.StartsWith("v", [System.StringComparison]::Ordinal)) {
+        return $value.Substring(1)
+    }
+    return $value
+}
+
+function Install-CliWithNpm {
+    Write-Step "通过 npm 兼容路径 $ActionName Codex CLI"
+    Refresh-ProcessPath
+    $npm = Get-CommandPath -Candidates @("npm.cmd", "npm.exe", "npm")
+    if ([string]::IsNullOrWhiteSpace($npm)) {
+        throw "未找到 npm。可改用默认 -CliMethod standalone，或显式添加 -InstallDevTools 后重试。"
+    }
+    $script:NpmExecutable = $npm
+
+    $packageSpec = "@openai/codex@$(Get-NpmRelease $Release)"
+    $arguments = @("install", "--global", $packageSpec, "--no-audit", "--no-fund")
+    $oldRegistry = [Environment]::GetEnvironmentVariable("npm_config_registry", "Process")
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($NpmRegistry)) {
+            [Environment]::SetEnvironmentVariable("npm_config_registry", $NpmRegistry.Trim(), "Process")
+            Write-Info "npm registry 仅通过本次进程环境变量使用：$(Get-SafeUrl $NpmRegistry)"
+        }
+        $result = Invoke-NativeCommand -Path $npm -Arguments $arguments -DisplayName "npm install --global $packageSpec"
+    } finally {
+        [Environment]::SetEnvironmentVariable("npm_config_registry", $oldRegistry, "Process")
+    }
+    if ($result.ExitCode -ne 0) {
+        throw "npm 兼容安装失败，ExitCode=$($result.ExitCode)。"
+    }
+}
+
+function Test-DevToolPresent {
+    param([string]$Name)
+
+    switch ($Name) {
+        "Git" {
+            return (Test-CommandSucceeds -Candidates @("git.exe", "git") -Arguments @("--version"))
+        }
+        "Node.js" {
+            $nodeOk = Test-CommandSucceeds -Candidates @("node.exe", "node") -Arguments @("--version")
+            $npmOk = Test-CommandSucceeds -Candidates @("npm.cmd", "npm.exe", "npm") -Arguments @("--version")
+            return ($nodeOk -and $npmOk)
+        }
+        "Python 3" {
+            $pythonCandidates = @(
+                [pscustomobject]@{ Names = @("python.exe", "python"); Arguments = @("--version") },
+                [pscustomobject]@{ Names = @("py.exe", "py"); Arguments = @("-3", "--version") }
+            )
+            foreach ($candidate in $pythonCandidates) {
+                $path = Get-CommandPath -Candidates $candidate.Names
+                if ([string]::IsNullOrWhiteSpace($path)) { continue }
+
+                $oldPreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = "Continue"
+                    $global:LASTEXITCODE = 0
+                    [string[]]$pythonArguments = @($candidate.Arguments)
+                    $output = @(& $path @pythonArguments 2>&1)
+                    if ($LASTEXITCODE -eq 0 -and (($output -join "`n") -match '(?im)\bPython\s+3(?:\.[0-9]+)+\b')) {
+                        return $true
+                    }
+                } catch {
+                    # 继续探测 py -3；python 命令可能是商店别名或 Python 2。
+                } finally {
+                    $ErrorActionPreference = $oldPreference
+                }
+            }
+            return $false
+        }
+        "GitHub CLI" {
+            return (Test-CommandSucceeds -Candidates @("gh.exe", "gh") -Arguments @("--version"))
+        }
+        default {
+            throw "未知开发工具：$Name"
+        }
+    }
+}
+
+function Test-WingetNoActionSuccess {
+    param([string]$Output)
+
+    $patterns = @(
+        "already installed",
+        "no available upgrade",
+        "no applicable update",
+        "no newer package versions",
+        "已安装",
+        "没有可用的升级",
+        "没有适用的更新",
+        "无需更新"
+    )
+    foreach ($pattern in $patterns) {
+        if ($Output.IndexOf($pattern, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            return $true
+        }
+    }
     return $false
 }
 
-function Install-CodexAppFromWinget {
-    Write-Host "官方路径：Microsoft Store / winget install Codex -s msstore" -ForegroundColor White
-    $winget = Get-CommandPath "winget"
-    if (-not $winget) {
-        throw "未检测到 winget，无法自动走 Microsoft Store 命令行路径。可手动从 Microsoft Store 安装 Codex，或提供同目录 Codex Installer.exe / CODEX_APP_INSTALLER_URL。"
-    }
-
-    if (Test-CodexAppInstalledByWinget -Winget $winget) {
-        Write-Host "检测到 Codex App 已安装，尝试通过 Microsoft Store 源检查更新。" -ForegroundColor White
-        Invoke-WingetCodexAppCommand -Winget $winget -Arguments @("upgrade", "Codex", "-s", "msstore", "--accept-package-agreements", "--accept-source-agreements")
-    } else {
-        Write-Host "未检测到 Codex App，尝试通过 Microsoft Store 源安装。" -ForegroundColor White
-        Invoke-WingetCodexAppCommand -Winget $winget -Arguments @("install", "Codex", "-s", "msstore", "--accept-package-agreements", "--accept-source-agreements")
-    }
-}
-
-function Install-CodexAppFromInstaller {
-    param([string]$Installer)
-    Write-Host "本地/自定义安装器：$Installer" -ForegroundColor White
-    Write-Host "先尝试静默安装；如果安装器不支持静默参数，会自动改为普通安装窗口。" -ForegroundColor DarkYellow
-    $silentOk = $false
-    try {
-        $p = Start-Process -FilePath $Installer -ArgumentList "/S" -Wait -PassThru
-        if ($p.ExitCode -in @(0, 3010, 1641)) { $silentOk = $true }
-    } catch {
-        $silentOk = $false
-    }
-    if (-not $silentOk) {
-        Write-Warning "Codex App 静默安装未确认成功，改为打开安装窗口。"
-        Start-Process -FilePath $Installer -Wait
-    }
-}
-
-function Install-CodexApp {
-    param([pscustomobject]$Plan)
-
-    Write-Step "安装/更新 Codex Windows App"
-    $localAppInstaller = Join-Path $ScriptDir "Codex Installer.exe"
-    $wingetError = $null
-
-    try {
-        Install-CodexAppFromWinget
-        return
-    } catch {
-        $wingetError = $_.Exception.Message
-        Write-Warning "Microsoft Store / winget 路径未完成：$wingetError"
-    }
-
-    if (Test-Path $localAppInstaller) {
-        Write-Info "改用仓库同目录的 Codex Installer.exe 作为国内/离线兜底。"
-        Install-CodexAppFromInstaller -Installer $localAppInstaller
-        return
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($Plan.CodexAppUrl)) {
-        Write-Info "本地安装器不存在，改用 CodexAppUrl / CODEX_APP_INSTALLER_URL 自定义下载源兜底。"
-        $appName = Get-UrlFileName -Url $Plan.CodexAppUrl -Fallback "Codex Installer.exe"
-        $appFile = Join-Path $WorkDir $appName
-        Download-File -Name "Codex Windows App" -Url @($Plan.CodexAppUrl) -OutFile $appFile
-        Install-CodexAppFromInstaller -Installer $appFile
-        return
-    }
-
-    throw "Codex App 官方 winget 路径失败，且没有可用的同目录 Codex Installer.exe 或 CodexAppUrl 兜底。原始错误：$wingetError"
-}
-
-function Invoke-OptionalCodexAppInstall {
-    param([pscustomobject]$Plan)
-
-    try {
-        Install-CodexApp -Plan $Plan
-    } catch {
-        Write-Warning "Codex Windows App 安装/更新未完成：$($_.Exception.Message)"
-        Write-Info "这不会影响 Codex CLI、Git、Node.js、Python 或 Skills 的安装结果。"
-        Write-Info "可稍后手动运行：winget install Codex -s msstore，或从 Microsoft Store 安装 Codex App。"
-    }
-}
-
-function Show-Versions {
-    param([string]$Title = "版本检查")
-    Write-Step $Title
-    Refresh-Path
-    $commands = @(
-        @{Name='git'; Args='--version'},
-        @{Name='node'; Args='-v'},
-        @{Name='npm.cmd'; Args='-v'},
-        @{Name='python'; Args='--version'},
-        @{Name='codex'; Args='--version'}
+function Invoke-Winget {
+    param(
+        [string]$Winget,
+        [string[]]$Arguments
     )
 
-    foreach ($item in $commands) {
-        $cmd = Get-CommandPath $item.Name
-        if ($cmd) {
-            try {
-                $out = & $cmd $item.Args 2>&1
-                Write-Host ($item.Name + " => " + ($out -join " ")) -ForegroundColor Green
-            } catch {
-                Write-Host ($item.Name + " => 已安装，但版本检查失败：" + $_.Exception.Message) -ForegroundColor Yellow
-            }
+    return Invoke-NativeCommand -Path $Winget -Arguments $Arguments -DisplayName ("winget " + ($Arguments -join " "))
+}
+
+function Install-MissingDevTools {
+    Write-Step "按需补齐开发工具"
+    $tools = @(
+        [pscustomobject]@{ Name = "Git"; Id = "Git.Git" },
+        [pscustomobject]@{ Name = "Node.js"; Id = "OpenJS.NodeJS.LTS" },
+        [pscustomobject]@{ Name = "Python 3"; Id = "Python.Python.3.14" },
+        [pscustomobject]@{ Name = "GitHub CLI"; Id = "GitHub.cli" }
+    )
+
+    $missing = New-Object System.Collections.Generic.List[object]
+    foreach ($tool in $tools) {
+        if (Test-DevToolPresent -Name $tool.Name) {
+            Write-Success "$($tool.Name)：已存在，保留当前版本。"
         } else {
-            Write-Host ($item.Name + " => 未找到，请重新打开 PowerShell 后再检查") -ForegroundColor Yellow
+            $missing.Add($tool)
+            Write-Line "$($tool.Name)：缺失，将通过 winget 安装 $($tool.Id)。" Yellow
+        }
+    }
+
+    if ($missing.Count -eq 0) {
+        Write-Success "开发工具均已可用；未执行升级或降级。"
+        return
+    }
+
+    $winget = Get-CommandPath -Candidates @("winget.exe", "winget")
+    if ([string]::IsNullOrWhiteSpace($winget)) {
+        throw "请求了 -InstallDevTools，但未找到 winget，无法补齐：$((@($missing) | ForEach-Object { $_.Name }) -join '、')。"
+    }
+
+    foreach ($tool in @($missing)) {
+        $arguments = @(
+            "install",
+            "--id", $tool.Id,
+            "--exact",
+            "--source", "winget",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+            "--silent"
+        )
+        $result = Invoke-Winget -Winget $winget -Arguments $arguments
+        Refresh-ProcessPath
+
+        if ($result.ExitCode -ne 0 -and -not (Test-WingetNoActionSuccess -Output $result.Output)) {
+            throw "$($tool.Name) 安装失败，winget ExitCode=$($result.ExitCode)。"
+        }
+        if (-not (Test-DevToolPresent -Name $tool.Name)) {
+            throw "$($tool.Name) 安装后仍无法执行。请重新打开终端检查 PATH，然后重试。"
+        }
+        Write-Success "$($tool.Name) 已可用。"
+    }
+}
+
+function Test-DesktopAppInstalled {
+    param(
+        [string]$Winget
+    )
+
+    $arguments = @(
+        "list",
+        "--id", $DesktopStoreId,
+        "--exact",
+        "-s", "msstore",
+        "--accept-source-agreements",
+        "--disable-interactivity"
+    )
+    $result = Invoke-Winget -Winget $Winget -Arguments $arguments
+    return ($result.ExitCode -eq 0 -and $result.Output.IndexOf($DesktopStoreId, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Install-DesktopAppFromWinget {
+    param([string]$Winget)
+
+    $verb = "install"
+    if ($Update -and (Test-DesktopAppInstalled -Winget $Winget)) {
+        $verb = "upgrade"
+    }
+
+    $arguments = @(
+        $verb,
+        "--id", $DesktopStoreId,
+        "--exact",
+        "-s", "msstore",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--disable-interactivity"
+    )
+    $result = Invoke-Winget -Winget $Winget -Arguments $arguments
+    if ($result.ExitCode -eq 0 -or (Test-WingetNoActionSuccess -Output $result.Output)) {
+        if (Test-DesktopAppInstalled -Winget $Winget) {
+            Write-Success "ChatGPT desktop app 的 Microsoft Store 路径已完成并通过二次确认。"
+            return
+        }
+        throw "winget 报告成功或无需操作，但未能确认 Store ID $DesktopStoreId 已安装。"
+    }
+
+    throw "Microsoft Store 安装/更新失败，winget ExitCode=$($result.ExitCode)。"
+}
+
+function Assert-DesktopMsixIdentity {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][string]$Architecture
+    )
+
+    $expectedName = "OpenAI.Codex"
+    $expectedPublisher = "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B"
+    $archive = $null
+    $manifestStream = $null
+    $xmlReader = $null
+
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        $manifestEntries = @(
+            $archive.Entries |
+                Where-Object { $_.FullName -ieq "AppxManifest.xml" }
+        )
+        if ($manifestEntries.Count -ne 1) {
+            throw "MSIX 必须且只能包含一个根目录 AppxManifest.xml。"
+        }
+        if ($manifestEntries[0].Length -lt 1 -or $manifestEntries[0].Length -gt 4194304) {
+            throw "MSIX AppxManifest.xml 大小异常。"
+        }
+
+        $settings = New-Object System.Xml.XmlReaderSettings
+        $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $manifestStream = $manifestEntries[0].Open()
+        $xmlReader = [System.Xml.XmlReader]::Create($manifestStream, $settings)
+        $document = New-Object System.Xml.XmlDocument
+        $document.XmlResolver = $null
+        $document.Load($xmlReader)
+        $identity = $document.SelectSingleNode(
+            "/*[local-name()='Package']/*[local-name()='Identity']"
+        )
+        if ($null -eq $identity) {
+            throw "MSIX AppxManifest.xml 缺少 Package/Identity。"
+        }
+
+        $actualName = [string]$identity.GetAttribute("Name")
+        $actualPublisher = [string]$identity.GetAttribute("Publisher")
+        $actualArchitecture = [string]$identity.GetAttribute("ProcessorArchitecture")
+        if ($actualName -cne $expectedName) {
+            throw "MSIX Identity Name 不匹配（实际：$actualName）。"
+        }
+        if ($actualPublisher -cne $expectedPublisher) {
+            throw "MSIX Identity Publisher 不匹配（实际：$actualPublisher）。"
+        }
+        if (-not $actualArchitecture.Equals($Architecture, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "MSIX ProcessorArchitecture 不匹配（期望：$Architecture；实际：$actualArchitecture）。"
+        }
+    } catch {
+        throw "ChatGPT desktop app MSIX 清单校验失败：$(Protect-LogText $_.Exception.Message)"
+    } finally {
+        if ($null -ne $xmlReader) { $xmlReader.Dispose() }
+        if ($null -ne $manifestStream) { $manifestStream.Dispose() }
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+
+    Write-Success "ChatGPT desktop app MSIX 身份、发布者与 $Architecture 架构检查通过。"
+}
+
+function Install-DesktopAppFromMsix {
+    param([string]$Architecture)
+
+    $url = $(if ($Architecture -eq "arm64") { $DesktopMsixArm64Url } else { $DesktopMsixX64Url })
+    $fileName = $(if ($Architecture -eq "arm64") { "ChatGPT-arm64.msix" } else { "ChatGPT-x64.msix" })
+    $script:DesktopMsixPath = Join-Path $script:WorkDir $fileName
+    Download-File `
+        -Name "ChatGPT desktop app MSIX ($Architecture)" `
+        -Url $url `
+        -OutFile $script:DesktopMsixPath `
+        -MinimumBytes 1048576 `
+        -MaximumBytes 1073741824
+
+    Assert-DesktopMsixIdentity -Path $script:DesktopMsixPath -Architecture $Architecture
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $script:DesktopMsixPath
+    if ($null -eq $signature -or $signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        $statusText = $(if ($null -eq $signature) { "Unknown" } else { [string]$signature.Status })
+        throw "ChatGPT desktop app MSIX 签名无效（Status=$statusText），已拒绝安装。"
+    }
+    if ($null -eq $signature.SignerCertificate) {
+        throw "ChatGPT desktop app MSIX 缺少签名证书，已拒绝安装。"
+    }
+    Write-Success "ChatGPT desktop app MSIX Authenticode 签名有效。"
+
+    $addAppxPackage = Get-Command Add-AppxPackage -CommandType Cmdlet -ErrorAction SilentlyContinue
+    if ($null -eq $addAppxPackage) {
+        throw "当前系统缺少 Add-AppxPackage，无法安装并由 Windows 验证 MSIX 签名。"
+    }
+
+    # Add-AppxPackage 会再次执行 Windows 包签名/信任链校验；失败会抛错。
+    Add-AppxPackage -Path $script:DesktopMsixPath -ErrorAction Stop
+    Write-Success "ChatGPT desktop app MSIX 已由 Add-AppxPackage 验证并安装。"
+}
+
+function Install-DesktopApp {
+    param([string]$Architecture)
+
+    Write-Step "安装/更新 ChatGPT desktop app"
+    $wingetError = $null
+    $winget = Get-CommandPath -Candidates @("winget.exe", "winget")
+    if (-not [string]::IsNullOrWhiteSpace($winget)) {
+        try {
+            Install-DesktopAppFromWinget -Winget $winget
+            return
+        } catch {
+            $wingetError = Protect-LogText $_.Exception.Message
+            Write-Warn "Microsoft Store / winget 路径未完成：$wingetError"
+        }
+    } else {
+        $wingetError = "未找到 winget"
+        Write-Warn "未找到 winget，将使用官方固定架构 MSIX。"
+    }
+
+    try {
+        Write-Info "回退到 OpenAI 官方固定架构 MSIX，并验证 Authenticode 签名。"
+        Install-DesktopAppFromMsix -Architecture $Architecture
+    } catch {
+        throw "ChatGPT desktop app 安装失败。winget：$wingetError；MSIX：$(Protect-LogText $_.Exception.Message)"
+    }
+}
+
+function Get-NormalizedFullPath {
+    param([Parameter(Mandatory=$true)][string]$Path)
+
+    try {
+        return [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
+    } catch {
+        throw "无法规范化安装目标路径：$Path"
+    }
+}
+
+function Test-SamePath {
+    param(
+        [Parameter(Mandatory=$true)][string]$Left,
+        [Parameter(Mandatory=$true)][string]$Right
+    )
+
+    $leftPath = Get-NormalizedFullPath -Path $Left
+    $rightPath = Get-NormalizedFullPath -Path $Right
+    return $leftPath.Equals($rightPath, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-PreferredCodexCommand {
+    Refresh-ProcessPath
+    $command = Get-Command -Name "codex" -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $command) { return $null }
+    return $command.Path
+}
+
+function Get-StandaloneCodexTarget {
+    $visibleBinDir = $script:ValidatedCodexInstallDir
+    if ([string]::IsNullOrWhiteSpace($visibleBinDir) -and -not [string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
+        $visibleBinDir = Resolve-CodexInstallDirectory -Value $env:CODEX_INSTALL_DIR
+    }
+    if ([string]::IsNullOrWhiteSpace($visibleBinDir)) {
+        if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            throw "无法确定 standalone 默认目录：LOCALAPPDATA 为空。"
+        }
+        $visibleBinDir = Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin"
+    }
+    return (Join-Path $visibleBinDir "codex.exe")
+}
+
+function Get-NpmCodexTargets {
+    $npm = $script:NpmExecutable
+    if ([string]::IsNullOrWhiteSpace($npm)) {
+        Refresh-ProcessPath
+        $npm = Get-CommandPath -Candidates @("npm.cmd", "npm.exe", "npm")
+    }
+    if ([string]::IsNullOrWhiteSpace($npm)) {
+        throw "无法定位用于本次安装的 npm，不能验收全局 Codex 目标。"
+    }
+
+    $prefixResult = Invoke-NativeCommand `
+        -Path $npm `
+        -Arguments @("prefix", "--global") `
+        -DisplayName "npm prefix --global"
+    if ($prefixResult.ExitCode -ne 0) {
+        throw "npm prefix --global 失败，ExitCode=$($prefixResult.ExitCode)。"
+    }
+
+    $prefix = $null
+    foreach ($line in @($prefixResult.Output -split "`r?`n")) {
+        $candidate = ([string]$line).Trim().Trim('"')
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate -PathType Container)) {
+            $prefix = $candidate
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($prefix)) {
+        throw "npm prefix --global 未返回可用的全局目录。"
+    }
+
+    $targets = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @("codex.cmd", "codex.exe")) {
+        $candidate = Join-Path $prefix $name
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $targets.Add($candidate)
+        }
+    }
+    if ($targets.Count -eq 0) {
+        throw "npm 全局目录中不存在 codex.cmd/codex.exe：$prefix"
+    }
+    return @($targets)
+}
+
+function Get-RequestedCodexVersion {
+    param([string]$RequestedRelease)
+
+    $value = $RequestedRelease.Trim()
+    if ($value -ceq "latest") { return $null }
+    return (Get-NpmRelease -RequestedRelease $value)
+}
+
+function Confirm-CodexVersion {
+    param(
+        [ValidateSet("standalone", "npm")][string]$Method,
+        [string]$RequestedRelease
+    )
+
+    Write-Step "验证 Codex CLI"
+    if ($Method -eq "standalone") {
+        $expectedTargets = @(Get-StandaloneCodexTarget)
+    } else {
+        $expectedTargets = @(Get-NpmCodexTargets)
+    }
+
+    foreach ($target in $expectedTargets) {
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            throw "$Method 安装目标不存在：$target"
+        }
+    }
+
+    $codex = Get-PreferredCodexCommand
+    if ([string]::IsNullOrWhiteSpace($codex)) {
+        throw "PATH 中未找到本次 $Method 安装后的 codex 命令。"
+    }
+    $pathMatchesTarget = $false
+    foreach ($target in $expectedTargets) {
+        if (Test-SamePath -Left $codex -Right $target) {
+            $pathMatchesTarget = $true
+            break
+        }
+    }
+    if (-not $pathMatchesTarget) {
+        throw "PATH 首选 codex 不是本次 $Method 安装目标。首选：$codex；目标：$($expectedTargets -join ' 或 ')"
+    }
+
+    $result = Invoke-NativeCommand -Path $codex -Arguments @("--version") -DisplayName "codex --version"
+    if ($result.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($result.Output)) {
+        throw "codex --version 验证失败，ExitCode=$($result.ExitCode)。"
+    }
+
+    $expectedVersion = Get-RequestedCodexVersion -RequestedRelease $RequestedRelease
+    if (-not [string]::IsNullOrWhiteSpace($expectedVersion)) {
+        $versionMatch = [regex]::Match(
+            $result.Output,
+            '(?<![0-9A-Za-z])v?([0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?)?)(?![0-9A-Za-z.+-])'
+        )
+        if (-not $versionMatch.Success) {
+            throw "codex --version 未返回可识别的版本号。"
+        }
+        $actualVersion = $versionMatch.Groups[1].Value
+        if ($actualVersion -cne $expectedVersion) {
+            throw "Codex CLI 版本不匹配。期望：$expectedVersion；实际：$actualVersion"
+        }
+        Write-Success "Codex CLI 与显式请求版本 $expectedVersion 一致。"
+    }
+
+    Write-Success "Codex CLI 验证通过：$($result.Output.Trim())"
+    return $codex
+}
+
+function Invoke-CodexDoctorAdvisory {
+    param([string]$Codex)
+
+    Write-Step "Codex doctor（建议性检查）"
+    try {
+        $result = Invoke-NativeCommand -Path $Codex -Arguments @("doctor", "--summary", "--no-color", "--ascii") -DisplayName "codex doctor --summary --no-color --ascii"
+        if ($result.ExitCode -eq 0) {
+            Write-Success "codex doctor 建议性检查通过。"
+        } else {
+            Write-Warn "codex doctor 返回 ExitCode=$($result.ExitCode)。这可能与终端能力或尚未登录有关，不影响 CLI 安装成功判定。"
+        }
+    } catch {
+        Write-Warn "codex doctor 无法完成：$(Protect-LogText $_.Exception.Message)。这是建议性检查，不影响 CLI 安装成功判定。"
+    }
+}
+
+function Remove-DownloadedArtifacts {
+    foreach ($path in @($script:BootstrapPath, $script:DesktopMsixPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($path)) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
-# ========== 主流程 ==========
-if (-not $CheckOnly) {
-    Invoke-SelfElevate
-}
-Enable-Tls12
-Start-Transcript -Path $LogFile -Append | Out-Null
+$desktopRequested = ([bool]$InstallDesktopApp -or [bool]$RequireDesktopApp)
+$desktopUnsupportedReason = $null
+$osInfo = $null
+$architecture = $null
 
 try {
-    Write-Host "Codex Windows 一键$ActionName 开始。日志文件：$LogFile" -ForegroundColor Cyan
-
-    $osInfo = Get-WindowsInfo
-    $arch = Get-NormalizedArch
-    $mode = Get-InstallMode -OsInfo $osInfo -Arch $arch
-    $plan = New-DownloadPlan -Mode $mode -Arch $arch
-
-    Write-Step "系统检查"
-    Write-Host "系统：$($osInfo.Caption) $($osInfo.Version)" -ForegroundColor White
-    Write-Host "架构：$arch" -ForegroundColor White
-    Write-Host "安装路径：$($mode.DisplayName)" -ForegroundColor White
-    Invoke-EnvironmentPreflight -OsInfo $osInfo -Arch $arch -Mode $mode
-    Write-PlanSummary -Plan $plan
-
-    $codexBefore = Get-CodexStatus
-    $runCodexCliInstall = $true
-    $runOptionalInstallSteps = $true
-    $forceInstall = [bool]$Force
-
-    if ($codexBefore.IsUsable) {
-        Write-Host "Codex CLI：已安装可用，$($codexBefore.VersionText)" -ForegroundColor Green
-        Write-Host "Codex 路径：$($codexBefore.Path)" -ForegroundColor DarkGray
-    } elseif ($codexBefore.IsInstalled) {
-        Write-Warning "检测到 codex 命令，但 codex --version 未正常返回：$($codexBefore.Error)"
-    } else {
-        Write-Host "Codex CLI：未检测到" -ForegroundColor Yellow
+    Assert-TestOverridesAreCheckOnly
+    Assert-ReleaseValue -Value $Release
+    Assert-BootstrapSha256 -Value $BootstrapSha256
+    Assert-NpmRegistry -Value $NpmRegistry
+    if ($CliMethod -eq "standalone" -and -not [string]::IsNullOrWhiteSpace($env:CODEX_INSTALL_DIR)) {
+        $script:ValidatedCodexInstallDir = Resolve-CodexInstallDirectory -Value $env:CODEX_INSTALL_DIR
     }
-
-    if (-not $Update -and $codexBefore.IsUsable -and -not $forceInstall) {
-        $forceInstall = Confirm-Action -Message "检测到 Codex CLI 已经可用。基础依赖仍会补缺；是否强制重新安装 Codex CLI 及可选 App/Skills？" -Default $false
-        if (-not $forceInstall) {
-            $runCodexCliInstall = $false
-            $runOptionalInstallSteps = $false
+    $osInfo = Get-WindowsInfo
+    $architecture = Get-NormalizedArchitecture -ReportedArchitecture $osInfo.Architecture
+    Assert-SupportedEnvironment -OsInfo $osInfo -Architecture $architecture
+    if ($desktopRequested -and $osInfo.Version.Build -lt $DesktopMinimumOsBuild) {
+        $desktopUnsupportedReason = "ChatGPT desktop app 最低需要 Windows 10 build 19041；当前为 $($osInfo.Version)，将跳过 Store/MSIX。"
+        if ($RequireDesktopApp) {
+            throw "-RequireDesktopApp 已启用，但 $desktopUnsupportedReason"
         }
     }
+    Show-Plan -OsInfo $osInfo -Architecture $architecture -DesktopRequested:$desktopRequested
+    if (-not [string]::IsNullOrWhiteSpace($desktopUnsupportedReason)) {
+        Write-Warn "可选桌面应用不满足系统版本门槛：$desktopUnsupportedReason"
+    }
+} catch {
+    Write-Host ""
+    Write-Host "$ActionName 预检失败：$(Protect-LogText $_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
-    if ($forceInstall) {
-        Write-Warning "已选择强制安装：将重新执行 Codex CLI 安装/更新，以及已配置的 Skills/App 安装；Git/Node/Python 仍会先做补缺检查，除非使用 -UpdateDependencies 才升级已有依赖。"
+if ($CheckOnly -and -not $VerifyDownloads) {
+    Write-Host ""
+    Write-Host "CheckOnly 完成：未下载、未安装、未修改用户目录。" -ForegroundColor Green
+    exit 0
+}
+
+$exitCode = 0
+$partialFailures = New-Object System.Collections.Generic.List[string]
+
+try {
+    Enable-Tls12
+    $script:WorkDir = New-PrivateWorkDirectory
+    Initialize-PrivateLog -Directory $script:WorkDir
+    Write-Line "Codex Windows 一键${ActionName}开始。" Cyan
+    if ($CheckOnly) {
+        Write-Line "临时验证目录将在完成时自动清理。" DarkGray
+    } else {
+        Write-Line "日志目录：$script:WorkDir" DarkGray
     }
 
-    if ($Update) {
-        Show-Versions -Title "更新前版本"
-    }
-
-    if ($mode.IsLegacy) {
-        Write-Warning "Windows 8/8.1 已经过官方生命周期。脚本会尽量安装仍可获取的旧版官方依赖，但 Codex 最新版本可能不再保证在旧系统完整可用。"
-    }
-
-    if ($VerifyDownloads) {
-        Test-DownloadPlan -Plan $plan -IncludeGit:(-not $SkipGit) -IncludePython:(-not $SkipPython) -IncludeSkills:(-not $SkipSkills) -IncludeCodexApp:(-not $SkipCodexApp)
+    if ($CliMethod -eq "standalone" -or $VerifyDownloads) {
+        $script:BootstrapPath = Join-Path $script:WorkDir ("official-bootstrap-" + [guid]::NewGuid().ToString("N") + ".ps1")
+        Download-File `
+            -Name "OpenAI 官方 Codex bootstrap" `
+            -Url $OfficialBootstrapUrl `
+            -OutFile $script:BootstrapPath `
+            -MinimumBytes 4096 `
+            -MaximumBytes 2097152
+        $null = Test-OfficialBootstrap -Path $script:BootstrapPath -ExpectedSha256 $BootstrapSha256
     }
 
     if ($CheckOnly) {
-        Write-Host ""
-        Write-Host "CheckOnly 预检完成：未执行$($ActionName)、未写入 Codex 配置。" -ForegroundColor Green
-        exit 0
-    }
-
-    if ($arch -eq "arm64" -and $osInfo.Version.Build -lt 22000 -and -not $SkipGit -and -not (Get-CommandPath "git")) {
-        throw "Git for Windows ARM64 官方要求 Windows 11。当前系统未检测到 git，无法自动安装。请升级到 Windows 11 ARM64 或先手动安装可用 Git。"
-    }
-
-    if (-not $SkipGit) {
-        if ((Get-CommandPath "git") -and -not $UpdateDependencies) {
-            Write-Info "已检测到 Git，跳过 Git 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
-        } else {
-            $gitName = Get-UrlFileName -Url $plan.GitUrl -Fallback $plan.GitFile
-            $gitFile = Join-Path $WorkDir $gitName
-            Download-File -Name "Git for Windows" -Url @($plan.GitUrls) -OutFile $gitFile
-            Start-Installer -Name "Git for Windows" -FilePath $gitFile -Arguments "/VERYSILENT /NORESTART /NOCANCEL /SP-"
-        }
-    }
-
-    if ((Test-NodeReady) -and -not $UpdateDependencies) {
-        Write-Info "已检测到 Node.js 16+，跳过 Node.js 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
+        Write-Success "CheckOnly + VerifyDownloads 完成：官方 bootstrap 已下载并验证，但未执行任何安装。"
     } else {
-        $nodeName = Get-UrlFileName -Url $plan.NodeUrl -Fallback $plan.NodeFile
-        $nodeFile = Join-Path $WorkDir $nodeName
-        Download-File -Name "Node.js" -Url @($plan.NodeUrls) -OutFile $nodeFile
-        Start-Installer -Name "Node.js" -FilePath "msiexec.exe" -Arguments "/i `"$nodeFile`" /qn /norestart"
-    }
-
-    if (-not $SkipPython) {
-        if ((Test-PythonReady) -and -not $UpdateDependencies) {
-            Write-Info "已检测到 Python 3，跳过 Python 安装。使用 -UpdateDependencies 可按当前计划版本重新安装。"
-        } else {
-            $pythonName = Get-UrlFileName -Url $plan.PythonUrl -Fallback $plan.PythonFile
-            $pythonFile = Join-Path $WorkDir $pythonName
-            Download-File -Name "Python" -Url @($plan.PythonUrls) -OutFile $pythonFile
-            Start-Installer -Name "Python" -FilePath $pythonFile -Arguments "/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 AssociateFiles=1 Include_test=0 Shortcuts=0"
-        }
-    }
-
-    Refresh-Path
-    if ($runCodexCliInstall) {
-        Install-CodexCli -Plan $plan
-    } else {
-        Write-Step "幂等跳过 Codex CLI"
-        Write-Info "Codex CLI 已可用，未重复执行 npm install -g @openai/codex@latest。"
-        Write-Info "如需强制重新安装 Codex CLI，请使用 -Force。"
-    }
-
-    if ($runOptionalInstallSteps) {
-        if (-not $SkipSkills) {
-            $localSkillsZip = Join-Path $ScriptDir "codex-skills.zip"
-            if (Test-Path $localSkillsZip) {
-                Install-Skills -ZipFile $localSkillsZip
-            } elseif (-not [string]::IsNullOrWhiteSpace($plan.SkillsUrl)) {
-                $skillsName = Get-UrlFileName -Url $plan.SkillsUrl -Fallback "codex-skills.zip"
-                $skillsFile = Join-Path $WorkDir $skillsName
-                Download-File -Name "Codex Skills" -Url @($plan.SkillsUrl) -OutFile $skillsFile -MinBytes 1024
-                Install-Skills -ZipFile $skillsFile
-            } else {
-                Write-Info "未配置 Skills 包，跳过 Skills 安装。可使用 CODEX_SKILLS_URL 或同目录 codex-skills.zip 启用。"
+        if ($InstallDevTools) {
+            try {
+                Install-MissingDevTools
+            } catch {
+                $devToolsError = Protect-LogText $_.Exception.Message
+                $partialFailures.Add("开发工具补缺：$devToolsError")
+                Write-Warn "可选开发工具未全部补齐；主 CLI 安装路径仍将继续尝试。详细信息：$devToolsError"
             }
         }
-    } elseif (-not $SkipSkills) {
-        Write-Info "Codex CLI 已可用且未强制安装，默认跳过可选 Skills 同步以避免覆盖现有 Skills。"
+
+        if ($CliMethod -eq "standalone") {
+            Invoke-StandaloneInstall -BootstrapPath $script:BootstrapPath -RequestedRelease $Release
+        } else {
+            Install-CliWithNpm
+        }
+
+        $codexCommand = Confirm-CodexVersion -Method $CliMethod -RequestedRelease $Release
+
+        if ($desktopRequested -and -not [string]::IsNullOrWhiteSpace($desktopUnsupportedReason)) {
+            $partialFailures.Add("ChatGPT desktop app：$desktopUnsupportedReason")
+            Write-Warn "PARTIAL：$desktopUnsupportedReason"
+        } elseif ($desktopRequested) {
+            try {
+                Install-DesktopApp -Architecture $architecture
+            } catch {
+                $desktopError = Protect-LogText $_.Exception.Message
+                if ($RequireDesktopApp) {
+                    throw "RequireDesktopApp 已启用：$desktopError"
+                }
+                $partialFailures.Add("ChatGPT desktop app：$desktopError")
+                Write-Warn "ChatGPT desktop app 未完成；CLI 仍继续验收。详细信息：$desktopError"
+            }
+        }
+
+        Invoke-CodexDoctorAdvisory -Codex $codexCommand
+
+        Write-Line ""
+        if ($partialFailures.Count -gt 0) {
+            Write-Line "${ActionName}完成（部分成功）：Codex CLI 已通过验证，但部分可选组件未完成。" Yellow
+            foreach ($failure in $partialFailures) {
+                Write-Line "  - $(Protect-LogText $failure)" Yellow
+            }
+        } else {
+            Write-Success "${ActionName}完成：Codex CLI 已通过强制版本验证。"
+        }
+        Write-Line "请运行 codex，并按提示使用 ChatGPT 账号登录。" White
+        Write-Line "首次登录也可运行：codex login" White
     }
-
-    $promptForAuth = (-not $Update) -and ($runCodexCliInstall -or $Reconfigure)
-    Write-CodexConfig -Plan $plan -PromptForAuth:$promptForAuth
-
-    if ($runOptionalInstallSteps -and -not $SkipCodexApp) {
-        Invoke-OptionalCodexAppInstall -Plan $plan
-    } elseif (-not $SkipCodexApp) {
-        Write-Info "Codex CLI 已可用且未强制安装，默认跳过 Codex App 安装/更新以减少对现有环境的影响。"
-        Write-Info "如需执行 App 安装/更新，可使用 -Force 或 -Update；脚本会优先尝试 winget install Codex -s msstore，再使用本地/自定义安装器兜底。"
-    }
-
-    Show-Versions -Title "$($ActionName)后版本检查"
-    Complete-SavedFiles
-
-    Write-Host ""
-    Write-Host "$($ActionName)完成。建议重新打开一个 PowerShell 窗口，然后执行：" -ForegroundColor Green
-    Write-Host "  codex --version" -ForegroundColor White
-    Write-Host "  codex" -ForegroundColor White
-    Write-Host ""
-    Write-Host "日志位置：$LogFile" -ForegroundColor DarkGray
 } catch {
-    Restore-SavedFiles
-    Write-Host ""
-    Write-Host "$($ActionName)失败：$($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "日志位置：$LogFile" -ForegroundColor Yellow
-    exit 1
+    $exitCode = 1
+    Write-Line ""
+    Write-Line "$ActionName 失败：$(Protect-LogText $_.Exception.Message)" Red
 } finally {
-    try { Stop-Transcript | Out-Null } catch {}
-    Write-Host ""
-    if (-not $NoPause -and -not $CheckOnly) {
-        Read-Host "按 Enter 键退出"
+    if ($CheckOnly) {
+        if (-not [string]::IsNullOrWhiteSpace($script:WorkDir)) {
+            Remove-Item -LiteralPath $script:WorkDir -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $script:WorkDir) {
+                $exitCode = 1
+                Write-Host "CheckOnly 临时目录清理失败；已将本次检查标记为失败。" -ForegroundColor Red
+            }
+        }
+        $script:BootstrapPath = $null
+        $script:DesktopMsixPath = $null
+        $script:LogFile = $null
+        $script:WorkDir = $null
+    } else {
+        Remove-DownloadedArtifacts
+        if (-not [string]::IsNullOrWhiteSpace($script:LogFile)) {
+            Write-Line "日志位置：$script:LogFile" DarkGray
+        }
+    }
+    if (-not $CheckOnly -and -not $NonInteractive -and -not $NoPause) {
+        try {
+            $null = Read-Host "按 Enter 键退出"
+        } catch {}
     }
 }
+
+exit $exitCode

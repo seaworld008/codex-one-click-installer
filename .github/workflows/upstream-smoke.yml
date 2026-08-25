@@ -1,0 +1,101 @@
+name: Upstream smoke
+
+on:
+  schedule:
+    - cron: "23 3 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  official-endpoints:
+    name: Official distribution endpoints
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Probe bootstrap, metadata, npm, and Windows app URLs
+        shell: bash
+        run: python3 scripts/check-upstreams.py
+
+  unix-verify-downloads:
+    name: ${{ matrix.platform }} VerifyDownloads check-only
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux x64
+            runner: ubuntu-24.04
+            os_name: Linux
+            os_version: Ubuntu 24.04 LTS
+            arch: x64
+          - platform: macOS arm64 plan
+            runner: macos-15
+            os_name: Darwin
+            os_version: "15.0"
+            arch: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and validate official bootstrap without installing
+        shell: bash
+        env:
+          CODEX_TEST_UNAME_S: ${{ matrix.os_name }}
+          CODEX_TEST_OS_VERSION: ${{ matrix.os_version }}
+          CODEX_TEST_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          ./install-codex-unix.sh \
+            --check-only \
+            --verify-downloads \
+            --non-interactive
+
+  windows-verify-downloads:
+    name: Windows ${{ matrix.arch }} VerifyDownloads check-only
+    runs-on: windows-2022
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and validate official bootstrap without installing
+        shell: powershell
+        env:
+          TEST_ARCH: ${{ matrix.arch }}
+        run: |
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -NoLogo `
+            -NoProfile `
+            -ExecutionPolicy Bypass `
+            -File ".\install-codex.ps1" `
+            -CheckOnly `
+            -VerifyDownloads `
+            -NonInteractive `
+            -NoPause `
+            -TestWindowsCaption "Microsoft Windows 11 Pro" `
+            -TestWindowsVersion "10.0.26100" `
+            -TestArch "$env:TEST_ARCH" `
+            -TestProductType 1
+          if ($LASTEXITCODE -ne 0) {
+            throw "VerifyDownloads check-only failed with exit code $LASTEXITCODE."
+          }
