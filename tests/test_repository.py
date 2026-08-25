@@ -346,8 +346,9 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertNotIn("--clobber", workflow)
         for contract in (
             "Preflight existing release or create and verify exact draft",
-            '"repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG"',
-            'if .prerelease then "prerelease" elif .draft then "draft"',
+            'gh release view "$RELEASE_TAG"',
+            "--json isDraft,isPrerelease",
+            'if .isPrerelease then "prerelease" elif .isDraft then "draft"',
             'gh release download "$RELEASE_TAG"',
             "scripts/verify-release-assets.py",
             "download_and_compare_release",
@@ -388,6 +389,62 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertGreaterEqual(workflow.count("scripts/verify-release-assets.py"), 5)
 
+    def test_release_state_queries_are_unified_and_fail_closed(self) -> None:
+        workflow = read(".github/workflows/release.yml")
+        self.assertNotIn("gh api", workflow)
+        self.assertNotIn("/releases/tags/", workflow)
+        self.assertNotIn("HTTP 404", workflow)
+        self.assertEqual(workflow.count("query_release_state()"), 3)
+        self.assertEqual(workflow.count("$(query_release_state)"), 5)
+        self.assertEqual(workflow.count('gh release view "$RELEASE_TAG"'), 3)
+
+        helper_pattern = re.compile(
+            r"(?ms)^          query_release_state\(\) \{\n"
+            r"(.*?)"
+            r"^          \}\n"
+        )
+        helper_bodies = helper_pattern.findall(workflow)
+        self.assertEqual(len(helper_bodies), 3)
+        self.assertTrue(
+            all(body == helper_bodies[0] for body in helper_bodies[1:]),
+            "every release-state read must use the same fail-closed helper",
+        )
+        helper = helper_bodies[0]
+        for contract in (
+            'gh release view "$RELEASE_TAG"',
+            "--json isDraft,isPrerelease",
+            "draft|prerelease|published)",
+            'if [ "$error_text" = "release not found" ]; then',
+            "printf 'missing\\n'",
+            "Could not determine whether the release exists.",
+            "return 1",
+        ):
+            self.assertIn(contract, helper)
+
+        preflight_start = workflow.index(
+            "- name: Preflight existing release or create and verify exact draft"
+        )
+        first_attest = workflow.index("uses: actions/attest@")
+        preflight = workflow[preflight_start:first_attest]
+        for contract in (
+            'release_state="$(query_release_state)"',
+            "draft|published)",
+            "missing)",
+            'created_state="$(query_release_state)"',
+            'test "$created_state" = "draft"',
+        ):
+            self.assertIn(contract, preflight)
+
+        publish_start = workflow.index("- name: Re-read and publish the verified draft")
+        final_start = workflow.index(
+            "- name: Verify public release assets and attestations"
+        )
+        publish = workflow[publish_start:final_start]
+        self.assertIn('release_state="$(query_release_state)"', publish)
+        self.assertIn('test "$release_state" = "draft"', publish)
+        self.assertIn('published_state="$(query_release_state)"', publish)
+        self.assertIn('test "$published_state" = "published"', publish)
+
     def test_public_release_rechecks_bytes_state_and_required_attestations(
         self,
     ) -> None:
@@ -407,8 +464,8 @@ class RepositoryContractTests(unittest.TestCase):
             'gh release download "$RELEASE_TAG"',
             "scripts/verify-release-assets.py",
             "--compare-dir",
-            '"repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG"',
-            ')\" = "published"',
+            'release_state="$(query_release_state)"',
+            'test "$release_state" = "published"',
             'gh attestation verify "$download_dir/$filename"',
             '--repo "$GITHUB_REPOSITORY"',
             '--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"',
