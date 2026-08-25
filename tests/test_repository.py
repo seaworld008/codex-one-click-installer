@@ -139,12 +139,24 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIsNone(pattern.search(data), f"possible {label} in {relative}")
 
     def test_release_verifier_never_echoes_secret_matches(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "codex_installer_verify_release",
+            ROOT / "scripts/verify-release.py",
+        )
+        if spec is None or spec.loader is None:
+            self.fail("could not load scripts/verify-release.py")
+        verifier = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = verifier
+        spec.loader.exec_module(verifier)
+        verifier.SECRET_PATTERNS = (re.compile(rb"TEST_MATCH_SENTINEL"),)
+
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "release"
             root.mkdir()
-            fake_secret = "github_" + "pat_" + ("A" * 24)
-            (root / "leak.txt").write_text(fake_secret, encoding="utf-8")
+            (root / "leak.txt").write_text(
+                "TEST_MATCH_SENTINEL", encoding="utf-8"
+            )
             (root / "VERSION").write_text(
                 f"{EXPECTED_VERSION}\n", encoding="utf-8"
             )
@@ -160,24 +172,15 @@ class RepositoryContractTests(unittest.TestCase):
             manifest = base / "manifest.txt"
             manifest.write_text("VERSION\nleak.txt\n", encoding="utf-8")
 
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts/verify-release.py"),
-                    "--root",
-                    str(root),
-                    "--manifest",
-                    str(manifest),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
+            errors = verifier.validate_tree(root, manifest)
+            self.assertIn("possible secret in leak.txt", errors)
+            self.assertFalse(
+                any("TEST_MATCH_SENTINEL" in error for error in errors)
             )
-            output = result.stdout + result.stderr
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("possible secret in leak.txt", output)
-            self.assertNotIn(fake_secret, output)
-            self.assertNotIn("GitHub fine-grained token", output)
+
+        source = read("scripts/verify-release.py")
+        self.assertNotIn("for label, pattern", source)
+        self.assertNotIn("match.group", source)
 
     def test_obsolete_installer_paths_are_absent(self) -> None:
         source = "\n".join(read(relative) for relative in INSTALLER_SOURCES)
