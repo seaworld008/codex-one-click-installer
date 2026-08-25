@@ -177,43 +177,66 @@ jobs:
               --basename "$RELEASE_BASENAME"
           }
 
+          query_release_state() {
+            local error_file error_text state
+            error_file="$(mktemp "${RUNNER_TEMP}/release-state.XXXXXXXX")"
+            if state="$(
+              gh release view "$RELEASE_TAG" \
+                --json isDraft,isPrerelease \
+                --jq 'if .isPrerelease then "prerelease" elif .isDraft then "draft" else "published" end' \
+                2>"$error_file"
+            )"; then
+              case "$state" in
+                draft|prerelease|published)
+                  printf '%s\n' "$state"
+                  ;;
+                *)
+                  echo "::error title=Release query::Unexpected release state: $state" >&2
+                  return 1
+                  ;;
+              esac
+              return 0
+            fi
+
+            error_text="$(tr -d '\r' < "$error_file")"
+            if [ "$error_text" = "release not found" ]; then
+              printf 'missing\n'
+              return 0
+            fi
+            cat "$error_file" >&2
+            echo "::error title=Release query::Could not determine whether the release exists." >&2
+            return 1
+          }
+
           python3 scripts/verify-release-assets.py \
             --local-dir dist \
             --basename "$RELEASE_BASENAME"
           verify_remote_tag
 
-          release_error="$(mktemp "${RUNNER_TEMP}/release-query.XXXXXXXX")"
-          if release_state="$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
-              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end' \
-              2>"$release_error"
-          )"; then
-            if [ "$release_state" = "prerelease" ]; then
+          release_state="$(query_release_state)"
+          case "$release_state" in
+            prerelease)
               echo "::error title=Release state::Existing release is a prerelease; refusing to attest or mutate it."
               exit 1
-            fi
-            test "$release_state" = "draft" ||
-              test "$release_state" = "published" || {
-                echo "::error title=Release state::Unexpected existing release state: $release_state"
-                exit 1
-              }
-            download_and_compare_release
-            verify_remote_tag
-            echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
-            if [ "$release_state" = "published" ]; then
-              echo "Existing public release is byte-for-byte identical; skipping attest and publish."
-            else
-              echo "Existing draft is byte-for-byte identical and ready for attestations."
-            fi
-            exit 0
-          fi
-
-          if ! grep -q "HTTP 404" "$release_error"; then
-            cat "$release_error" >&2
-            echo "::error title=Release query::Could not determine whether the release exists."
-            exit 1
-          fi
+              ;;
+            draft|published)
+              download_and_compare_release
+              verify_remote_tag
+              echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+              if [ "$release_state" = "published" ]; then
+                echo "Existing public release is byte-for-byte identical; skipping attest and publish."
+              else
+                echo "Existing draft is byte-for-byte identical and ready for attestations."
+              fi
+              exit 0
+              ;;
+            missing)
+              ;;
+            *)
+              echo "::error title=Release state::Unexpected release state: $release_state"
+              exit 1
+              ;;
+          esac
 
           gh release create "$RELEASE_TAG" \
             "dist/${RELEASE_BASENAME}.zip" \
@@ -225,11 +248,8 @@ jobs:
             --title "Codex one-click installer ${RELEASE_TAG}" \
             --generate-notes
           verify_remote_tag
-          test "$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
-              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
-          )" = "draft" || {
+          created_state="$(query_release_state)"
+          test "$created_state" = "draft" || {
             echo "::error title=Release state::New release was not created as a normal draft."
             exit 1
           }
@@ -297,27 +317,52 @@ jobs:
               --basename "$RELEASE_BASENAME"
           }
 
+          query_release_state() {
+            local error_file error_text state
+            error_file="$(mktemp "${RUNNER_TEMP}/release-state.XXXXXXXX")"
+            if state="$(
+              gh release view "$RELEASE_TAG" \
+                --json isDraft,isPrerelease \
+                --jq 'if .isPrerelease then "prerelease" elif .isDraft then "draft" else "published" end' \
+                2>"$error_file"
+            )"; then
+              case "$state" in
+                draft|prerelease|published)
+                  printf '%s\n' "$state"
+                  ;;
+                *)
+                  echo "::error title=Release query::Unexpected release state: $state" >&2
+                  return 1
+                  ;;
+              esac
+              return 0
+            fi
+
+            error_text="$(tr -d '\r' < "$error_file")"
+            if [ "$error_text" = "release not found" ]; then
+              printf 'missing\n'
+              return 0
+            fi
+            cat "$error_file" >&2
+            echo "::error title=Release query::Could not determine whether the release exists." >&2
+            return 1
+          }
+
           python3 scripts/verify-release-assets.py \
             --local-dir dist \
             --basename "$RELEASE_BASENAME"
           download_and_compare_release
           verify_remote_tag
-          test "$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
-              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
-          )" = "draft" || {
+          release_state="$(query_release_state)"
+          test "$release_state" = "draft" || {
             echo "::error title=Release state::Release is no longer an exact normal draft before publish."
             exit 1
           }
           verify_remote_tag
           gh release edit "$RELEASE_TAG" --draft=false --latest
           verify_remote_tag
-          test "$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
-              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
-          )" = "published"
+          published_state="$(query_release_state)"
+          test "$published_state" = "published"
 
       - name: Verify public release assets and attestations
         shell: bash
@@ -326,6 +371,37 @@ jobs:
         run: |
           set -euo pipefail
 
+          query_release_state() {
+            local error_file error_text state
+            error_file="$(mktemp "${RUNNER_TEMP}/release-state.XXXXXXXX")"
+            if state="$(
+              gh release view "$RELEASE_TAG" \
+                --json isDraft,isPrerelease \
+                --jq 'if .isPrerelease then "prerelease" elif .isDraft then "draft" else "published" end' \
+                2>"$error_file"
+            )"; then
+              case "$state" in
+                draft|prerelease|published)
+                  printf '%s\n' "$state"
+                  ;;
+                *)
+                  echo "::error title=Release query::Unexpected release state: $state" >&2
+                  return 1
+                  ;;
+              esac
+              return 0
+            fi
+
+            error_text="$(tr -d '\r' < "$error_file")"
+            if [ "$error_text" = "release not found" ]; then
+              printf 'missing\n'
+              return 0
+            fi
+            cat "$error_file" >&2
+            echo "::error title=Release query::Could not determine whether the release exists." >&2
+            return 1
+          }
+
           download_dir="$(mktemp -d "${RUNNER_TEMP}/release-final.XXXXXXXX")"
           gh release download "$RELEASE_TAG" --dir "$download_dir"
           python3 scripts/verify-release-assets.py \
@@ -333,11 +409,8 @@ jobs:
             --compare-dir "$download_dir" \
             --basename "$RELEASE_BASENAME"
 
-          test "$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
-              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
-          )" = "published" || {
+          release_state="$(query_release_state)"
+          test "$release_state" = "published" || {
             echo "::error title=Release state::Final release is not a normal public release."
             exit 1
           }
