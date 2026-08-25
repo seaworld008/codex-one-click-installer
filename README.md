@@ -288,7 +288,7 @@ sha256sum -c SHA256SUMS
 Windows PowerShell 可逐个比对：
 
 ```powershell
-Get-FileHash .\codex-one-click-installer-v2.0.0.zip -Algorithm SHA256
+Get-FileHash .\codex-one-click-installer-v2.0.1.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS
 ```
 
@@ -297,7 +297,7 @@ ZIP 和 tar.gz 都会在发布流水线中重新解包验证；`.sh` / `.command
 发布流水线还会为 `SHA256SUMS` 中的资产生成 GitHub artifact attestation。安装前可以额外验证来源：
 
 ```bash
-gh attestation verify codex-one-click-installer-v2.0.0.zip \
+gh attestation verify codex-one-click-installer-v2.0.1.zip \
   --repo seaworld008/codex-one-click-installer
 ```
 

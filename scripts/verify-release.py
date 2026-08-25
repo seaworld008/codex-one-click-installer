@@ -19,13 +19,13 @@ EXECUTABLE_FILES = {
 }
 WINDOWS_TEXT_SUFFIXES = {".cmd", ".ps1"}
 FORBIDDEN_SUFFIXES = {".dll", ".dmg", ".exe", ".msi", ".pkg"}
-SECRET_PATTERNS = {
-    "OpenAI API key": re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
-    "GitHub token": re.compile(rb"\bgh[oprsu]_[A-Za-z0-9]{20,}\b"),
-    "GitHub fine-grained token": re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    "AWS access key": re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
-    "private key": re.compile(rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"),
-}
+SECRET_PATTERNS = (
+    re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+    re.compile(rb"\bgh[oprsu]_[A-Za-z0-9]{20,}\b"),
+    re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(rb"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    re.compile(rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"),
+)
 
 
 def read_manifest(path: Path) -> list[str]:
@@ -79,9 +79,10 @@ def validate_tree(root: Path, manifest: Path) -> list[str]:
         if b"\0" in data:
             errors.append(f"NUL byte found in release text file: {relative}")
             continue
-        for label, pattern in SECRET_PATTERNS.items():
+        for pattern in SECRET_PATTERNS:
             if pattern.search(data):
-                errors.append(f"possible {label} in {relative}")
+                errors.append(f"possible secret in {relative}")
+                break
 
         if path.suffix.lower() in WINDOWS_TEXT_SUFFIXES:
             without_crlf = data.replace(b"\r\n", b"")

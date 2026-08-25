@@ -158,7 +158,7 @@ Linux：
 
 可额外验证发布来源：
 
-  gh attestation verify codex-one-click-installer-v2.0.0.zip --repo seaworld008/codex-one-click-installer
+  gh attestation verify codex-one-click-installer-v2.0.1.zip --repo seaworld008/codex-one-click-installer
 
 升级说明
 --------

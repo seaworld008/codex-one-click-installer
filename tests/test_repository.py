@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "2.0.0"
+EXPECTED_VERSION = "2.0.1"
 CHECKOUT_V7_0_1 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 ATTEST_V4_2_2 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ACTIONLINT_V1_7_12 = "914e7df21a07ef503a81201c76d2b11c789d3fca"
@@ -137,6 +137,50 @@ class RepositoryContractTests(unittest.TestCase):
             data = path.read_bytes()
             for label, pattern in patterns.items():
                 self.assertIsNone(pattern.search(data), f"possible {label} in {relative}")
+
+    def test_release_verifier_never_echoes_secret_matches(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "codex_installer_verify_release",
+            ROOT / "scripts/verify-release.py",
+        )
+        if spec is None or spec.loader is None:
+            self.fail("could not load scripts/verify-release.py")
+        verifier = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = verifier
+        spec.loader.exec_module(verifier)
+        verifier.SECRET_PATTERNS = (re.compile(rb"TEST_MATCH_SENTINEL"),)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "release"
+            root.mkdir()
+            (root / "leak.txt").write_text(
+                "TEST_MATCH_SENTINEL", encoding="utf-8"
+            )
+            (root / "VERSION").write_text(
+                f"{EXPECTED_VERSION}\n", encoding="utf-8"
+            )
+            (root / "SBOM.spdx.json").write_text(
+                json.dumps(
+                    {
+                        "spdxVersion": "SPDX-2.3",
+                        "packages": [{"versionInfo": EXPECTED_VERSION}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = base / "manifest.txt"
+            manifest.write_text("VERSION\nleak.txt\n", encoding="utf-8")
+
+            errors = verifier.validate_tree(root, manifest)
+            self.assertIn("possible secret in leak.txt", errors)
+            self.assertFalse(
+                any("TEST_MATCH_SENTINEL" in error for error in errors)
+            )
+
+        source = read("scripts/verify-release.py")
+        self.assertNotIn("for label, pattern", source)
+        self.assertNotIn("match.group", source)
 
     def test_obsolete_installer_paths_are_absent(self) -> None:
         source = "\n".join(read(relative) for relative in INSTALLER_SOURCES)
@@ -753,7 +797,9 @@ class SbomTests(unittest.TestCase):
             base = Path(temporary)
             source = base / "source"
             source.mkdir()
-            (source / "VERSION").write_text("2.0.0\n", encoding="utf-8")
+            (source / "VERSION").write_text(
+                f"{EXPECTED_VERSION}\n", encoding="utf-8"
+            )
             output_one = base / "one.json"
             output_two = base / "two.json"
             command = [
