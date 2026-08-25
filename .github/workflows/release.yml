@@ -60,10 +60,10 @@ jobs:
               printf '%s\n' "$remote_refs" |
                 awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }'
             )"
-            test -n "$remote_object" && test -n "$remote_commit" || {
+            if test -z "$remote_object" || test -z "$remote_commit"; then
               echo "::error title=Remote tag mismatch::Remote annotated tag or peeled commit is missing."
               return 1
-            }
+            fi
             test "$remote_object" = "$expected_object" || {
               echo "::error title=Remote tag mismatch::Remote tag object changed."
               return 1
@@ -97,11 +97,11 @@ jobs:
           tag_commit="$(git rev-parse "${tag_ref}^{commit}")"
           event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
           head_commit="$(git rev-parse HEAD)"
-          test "$head_commit" = "$tag_commit" &&
-            test "$event_commit" = "$tag_commit" || {
+          if test "$head_commit" != "$tag_commit" ||
+            test "$event_commit" != "$tag_commit"; then
               echo "::error title=Tag checkout mismatch::HEAD, annotated tag, and event do not resolve to one commit."
               exit 1
-            }
+          fi
           git merge-base --is-ancestor "$tag_commit" origin/main || {
             echo "::error title=Main reachability::The release commit is not reachable from origin/main."
             exit 1
