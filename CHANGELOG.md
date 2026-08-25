@@ -6,6 +6,13 @@
 
 暂无。
 
+## [2.0.1] - 2026-08-25
+
+### Security
+
+- Release 内容发现疑似秘密时仅输出固定的文件级诊断，不回显匹配值或秘密类别标签。
+- 新增诊断脱敏回归测试，并启用 GitHub CodeQL 默认扫描覆盖 Actions 与 Python。
+
 ## [2.0.0] - 2026-08-25
 
 ### Added
@@ -58,6 +65,7 @@
 - Windows 幂等安装、更新入口和可选 App 兜底。
 - 该版本的发布 ZIP 曾丢失 macOS 文件执行权限；已在 v2 发布链路中加入真实归档回归测试。
 
-[Unreleased]: https://github.com/seaworld008/codex-one-click-installer/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/seaworld008/codex-one-click-installer/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/seaworld008/codex-one-click-installer/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/seaworld008/codex-one-click-installer/compare/v1.2.0...v2.0.0
 [1.2.0]: https://github.com/seaworld008/codex-one-click-installer/releases/tag/v1.2.0

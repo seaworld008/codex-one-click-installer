@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "2.0.0"
+EXPECTED_VERSION = "2.0.1"
 CHECKOUT_V7_0_1 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 ATTEST_V4_2_2 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ACTIONLINT_V1_7_12 = "914e7df21a07ef503a81201c76d2b11c789d3fca"
@@ -137,6 +137,47 @@ class RepositoryContractTests(unittest.TestCase):
             data = path.read_bytes()
             for label, pattern in patterns.items():
                 self.assertIsNone(pattern.search(data), f"possible {label} in {relative}")
+
+    def test_release_verifier_never_echoes_secret_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "release"
+            root.mkdir()
+            fake_secret = "github_" + "pat_" + ("A" * 24)
+            (root / "leak.txt").write_text(fake_secret, encoding="utf-8")
+            (root / "VERSION").write_text(
+                f"{EXPECTED_VERSION}\n", encoding="utf-8"
+            )
+            (root / "SBOM.spdx.json").write_text(
+                json.dumps(
+                    {
+                        "spdxVersion": "SPDX-2.3",
+                        "packages": [{"versionInfo": EXPECTED_VERSION}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest = base / "manifest.txt"
+            manifest.write_text("VERSION\nleak.txt\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/verify-release.py"),
+                    "--root",
+                    str(root),
+                    "--manifest",
+                    str(manifest),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            output = result.stdout + result.stderr
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("possible secret in leak.txt", output)
+            self.assertNotIn(fake_secret, output)
+            self.assertNotIn("GitHub fine-grained token", output)
 
     def test_obsolete_installer_paths_are_absent(self) -> None:
         source = "\n".join(read(relative) for relative in INSTALLER_SOURCES)
@@ -753,7 +794,9 @@ class SbomTests(unittest.TestCase):
             base = Path(temporary)
             source = base / "source"
             source.mkdir()
-            (source / "VERSION").write_text("2.0.0\n", encoding="utf-8")
+            (source / "VERSION").write_text(
+                f"{EXPECTED_VERSION}\n", encoding="utf-8"
+            )
             output_one = base / "one.json"
             output_two = base / "two.json"
             command = [

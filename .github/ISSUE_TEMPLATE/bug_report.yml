@@ -13,7 +13,7 @@ body:
     attributes:
       label: 安装器版本
       description: 解压包中的 VERSION 内容，或使用的 Git commit。
-      placeholder: 2.0.0 / abcdef1
+      placeholder: 2.0.1 / abcdef1
     validations:
       required: true
   - type: input
