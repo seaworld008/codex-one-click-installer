@@ -7,12 +7,20 @@ body:
   - type: markdown
     attributes:
       value: |
-        这个模板适合反馈“某个系统能否安装成功”、LTSC/企业版/旧系统兼容性、下载源可达性等结果。
+        这个模板适合反馈某个受支持系统、架构和网络环境下的 `CheckOnly` 或安装结果。请勿公开企业源、代理凭据或认证文件。
+  - type: input
+    id: installer_version
+    attributes:
+      label: 安装器版本
+      description: 解压包中的 VERSION 内容，或使用的 Git commit。
+      placeholder: 2.0.0 / abcdef1
+    validations:
+      required: true
   - type: input
     id: environment
     attributes:
       label: 环境
-      placeholder: Windows 10 Enterprise LTSC 1809 x64 / macOS 14 arm64
+      placeholder: Windows 10 Enterprise LTSC 1809 x64 / macOS 15 arm64 / Ubuntu 24.04 x64
     validations:
       required: true
   - type: dropdown
@@ -28,14 +36,23 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: mode
+    attributes:
+      label: 运行模式
+      options:
+        - CheckOnly（未联网验证）
+        - CheckOnly + VerifyDownloads
+        - 安装
+        - 更新
+    validations:
+      required: true
+  - type: dropdown
     id: mirror
     attributes:
       label: 下载源模式
       options:
-        - china
         - official
-        - 自定义 downloads.local.json
-        - 自定义环境变量
+        - 自定义企业源（已去敏）
         - 不确定
     validations:
       required: true
@@ -44,6 +61,15 @@ body:
     attributes:
       label: 详细说明
       description: 可以补充代理、公司内网、安全软件、PowerShell 版本、终端类型等信息。
-      placeholder: 例如：公司内网代理下 npmmirror 可访问，GitHub release 下载较慢。
+      placeholder: 例如：公司内网代理下官方 bootstrap 被证书策略拦截，已使用去敏后的错误信息说明。
     validations:
       required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已移除 API Key、token、auth.json、用户名、私有域名和代理凭据。
+          required: true
+        - label: 我使用的是最新 Release，并填写了准确的 VERSION 和运行模式。
+          required: true

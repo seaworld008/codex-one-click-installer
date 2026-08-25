@@ -27,3 +27,10 @@ body:
       description: 如果已有临时绕过方法，也可以补充。
     validations:
       required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 示例命令和地址中不含真实 API Key、token、私有域名或代理凭据。
+          required: true

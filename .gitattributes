@@ -1,3 +1,32 @@
-*.cmd -text
-*.bat -text
-Codex\ Installer.exe binary
+* text=auto
+
+# Unix entry points and repository automation always use LF.
+*.sh      text eol=lf
+*.command text eol=lf
+*.py      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+VERSION   text eol=lf
+
+# Native Windows entry points are shipped with CRLF.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never ask Git to normalize opaque artifacts.
+*.7z   binary
+*.dmg  binary
+*.exe  binary
+*.gz   binary
+*.ico  binary
+*.jpg  binary
+*.msi  binary
+*.pdf  binary
+*.pkg  binary
+*.png  binary
+*.tar  binary
+*.tgz  binary
+*.zip  binary

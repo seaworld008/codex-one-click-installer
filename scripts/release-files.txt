@@ -1,0 +1,19 @@
+# One repository-relative path per line. Keep this list explicit and sorted.
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+README.md
+README.txt
+SECURITY.md
+SUPPORT.md
+VERSION
+Windows双击安装Codex.cmd
+Windows双击更新Codex.cmd
+docs/migration-v2.md
+docs/troubleshooting.md
+install-codex-linux.sh
+install-codex-macos.sh
+install-codex-unix.sh
+install-codex.ps1
+macOS双击安装Codex.command
+macOS双击更新Codex.command

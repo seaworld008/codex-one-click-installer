@@ -1,0 +1,386 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    name: Reuse compatibility aggregate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/compatibility.yml
+
+  publish:
+    name: Attest and atomically publish exact tag
+    needs: aggregate
+    if: ${{ needs.aggregate.outputs.gate-result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write # Create the verified draft and publish it after readback.
+      id-token: write # Request the short-lived OIDC identity used by attestations.
+      attestations: write # Store provenance and SBOM attestations for release assets.
+      artifact-metadata: write # Register artifact metadata emitted by actions/attest.
+    steps:
+      - name: Check out exact tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.ref }}
+
+      - name: Verify annotated tag, main reachability, and remote identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          verify_remote_tag() {
+            local tag="$1"
+            local expected_object="$2"
+            local expected_commit="$3"
+            local expected_event_commit="$4"
+            local remote_refs remote_object remote_commit
+            remote_refs="$(
+              git ls-remote --tags origin \
+                "refs/tags/$tag" "refs/tags/$tag^{}"
+            )"
+            remote_object="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$tag" '$2 == ref { print $1 }'
+            )"
+            remote_commit="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }'
+            )"
+            if test -z "$remote_object" || test -z "$remote_commit"; then
+              echo "::error title=Remote tag mismatch::Remote annotated tag or peeled commit is missing."
+              return 1
+            fi
+            test "$remote_object" = "$expected_object" || {
+              echo "::error title=Remote tag mismatch::Remote tag object changed."
+              return 1
+            }
+            test "$remote_commit" = "$expected_commit" || {
+              echo "::error title=Remote tag mismatch::Remote peeled commit changed."
+              return 1
+            }
+            test "$remote_commit" = "$expected_event_commit" || {
+              echo "::error title=Event mismatch::Remote peeled commit differs from the event commit."
+              return 1
+            }
+          }
+
+          version="$(tr -d '\r\n' < VERSION)"
+          expected_tag="v${version}"
+          test "$GITHUB_REF_NAME" = "$expected_tag" || {
+            echo "::error title=Version mismatch::Tag $GITHUB_REF_NAME does not match VERSION $version."
+            exit 1
+          }
+
+          git fetch --force --prune --tags origin \
+            "+refs/heads/main:refs/remotes/origin/main"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          test "$(git cat-file -t "$tag_ref")" = "tag" || {
+            echo "::error title=Unsigned release intent::Release tags must be annotated tags."
+            exit 1
+          }
+
+          tag_object="$(git rev-parse "${tag_ref}^{tag}")"
+          tag_commit="$(git rev-parse "${tag_ref}^{commit}")"
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          if test "$head_commit" != "$tag_commit" ||
+            test "$event_commit" != "$tag_commit"; then
+              echo "::error title=Tag checkout mismatch::HEAD, annotated tag, and event do not resolve to one commit."
+              exit 1
+          fi
+          git merge-base --is-ancestor "$tag_commit" origin/main || {
+            echo "::error title=Main reachability::The release commit is not reachable from origin/main."
+            exit 1
+          }
+          verify_remote_tag \
+            "$GITHUB_REF_NAME" "$tag_object" "$tag_commit" "$event_commit"
+
+          test -z "$(git status --porcelain --untracked-files=no)"
+          {
+            echo "RELEASE_TAG=$GITHUB_REF_NAME"
+            echo "RELEASE_TAG_OBJECT=$tag_object"
+            echo "RELEASE_TAG_COMMIT=$tag_commit"
+            echo "RELEASE_EVENT_COMMIT=$event_commit"
+            echo "RELEASE_BASENAME=codex-one-click-installer-v${version}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and verify release assets from immutable tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/package-release.sh --source-ref "$RELEASE_TAG"
+          test -f "dist/${RELEASE_BASENAME}.zip"
+          test -f "dist/${RELEASE_BASENAME}.tar.gz"
+          test -f "dist/${RELEASE_BASENAME}.spdx.json"
+          test -f dist/SHA256SUMS
+          python3 scripts/verify-release-assets.py \
+            --local-dir dist \
+            --basename "$RELEASE_BASENAME"
+
+      - name: Preflight existing release or create and verify exact draft
+        id: preflight
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          verify_remote_tag() {
+            local remote_refs remote_object remote_commit
+            remote_refs="$(
+              git ls-remote --tags origin \
+                "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}"
+            )"
+            remote_object="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$RELEASE_TAG" '$2 == ref { print $1 }'
+            )"
+            remote_commit="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$RELEASE_TAG^{}" '$2 == ref { print $1 }'
+            )"
+            test "$remote_object" = "$RELEASE_TAG_OBJECT" || {
+              echo "::error title=Remote tag mismatch::Remote tag object changed during release."
+              return 1
+            }
+            test "$remote_commit" = "$RELEASE_TAG_COMMIT" || {
+              echo "::error title=Remote tag mismatch::Remote peeled commit changed during release."
+              return 1
+            }
+            test "$remote_commit" = "$RELEASE_EVENT_COMMIT" || {
+              echo "::error title=Event mismatch::Remote peeled commit differs from the event commit."
+              return 1
+            }
+          }
+
+          download_and_compare_release() {
+            local download_dir
+            download_dir="$(mktemp -d "${RUNNER_TEMP}/release-readback.XXXXXXXX")"
+            gh release download "$RELEASE_TAG" --dir "$download_dir"
+            python3 scripts/verify-release-assets.py \
+              --local-dir dist \
+              --compare-dir "$download_dir" \
+              --basename "$RELEASE_BASENAME"
+          }
+
+          python3 scripts/verify-release-assets.py \
+            --local-dir dist \
+            --basename "$RELEASE_BASENAME"
+          verify_remote_tag
+
+          release_error="$(mktemp "${RUNNER_TEMP}/release-query.XXXXXXXX")"
+          if release_state="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
+              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end' \
+              2>"$release_error"
+          )"; then
+            if [ "$release_state" = "prerelease" ]; then
+              echo "::error title=Release state::Existing release is a prerelease; refusing to attest or mutate it."
+              exit 1
+            fi
+            test "$release_state" = "draft" ||
+              test "$release_state" = "published" || {
+                echo "::error title=Release state::Unexpected existing release state: $release_state"
+                exit 1
+              }
+            download_and_compare_release
+            verify_remote_tag
+            echo "release_state=$release_state" >> "$GITHUB_OUTPUT"
+            if [ "$release_state" = "published" ]; then
+              echo "Existing public release is byte-for-byte identical; skipping attest and publish."
+            else
+              echo "Existing draft is byte-for-byte identical and ready for attestations."
+            fi
+            exit 0
+          fi
+
+          if ! grep -q "HTTP 404" "$release_error"; then
+            cat "$release_error" >&2
+            echo "::error title=Release query::Could not determine whether the release exists."
+            exit 1
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            "dist/${RELEASE_BASENAME}.zip" \
+            "dist/${RELEASE_BASENAME}.tar.gz" \
+            "dist/${RELEASE_BASENAME}.spdx.json" \
+            "dist/SHA256SUMS" \
+            --draft \
+            --verify-tag \
+            --title "Codex one-click installer ${RELEASE_TAG}" \
+            --generate-notes
+          verify_remote_tag
+          test "$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
+              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
+          )" = "draft" || {
+            echo "::error title=Release state::New release was not created as a normal draft."
+            exit 1
+          }
+          download_and_compare_release
+          echo "release_state=draft" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SHA256SUMS subjects with build provenance
+        if: ${{ steps.preflight.outputs.release_state == 'draft' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      - name: Attest ZIP and tar archive with external SPDX SBOM
+        if: ${{ steps.preflight.outputs.release_state == 'draft' }}
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/${{ env.RELEASE_BASENAME }}.zip
+            dist/${{ env.RELEASE_BASENAME }}.tar.gz
+          sbom-path: dist/${{ env.RELEASE_BASENAME }}.spdx.json
+
+      - name: Re-read and publish the verified draft
+        if: ${{ steps.preflight.outputs.release_state == 'draft' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          verify_remote_tag() {
+            local remote_refs remote_object remote_commit
+            remote_refs="$(
+              git ls-remote --tags origin \
+                "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}"
+            )"
+            remote_object="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$RELEASE_TAG" '$2 == ref { print $1 }'
+            )"
+            remote_commit="$(
+              printf '%s\n' "$remote_refs" |
+                awk -v ref="refs/tags/$RELEASE_TAG^{}" '$2 == ref { print $1 }'
+            )"
+            test "$remote_object" = "$RELEASE_TAG_OBJECT" || {
+              echo "::error title=Remote tag mismatch::Remote tag object changed during release."
+              return 1
+            }
+            test "$remote_commit" = "$RELEASE_TAG_COMMIT" || {
+              echo "::error title=Remote tag mismatch::Remote peeled commit changed during release."
+              return 1
+            }
+            test "$remote_commit" = "$RELEASE_EVENT_COMMIT" || {
+              echo "::error title=Event mismatch::Remote peeled commit differs from the event commit."
+              return 1
+            }
+          }
+
+          download_and_compare_release() {
+            local download_dir
+            download_dir="$(mktemp -d "${RUNNER_TEMP}/release-readback.XXXXXXXX")"
+            gh release download "$RELEASE_TAG" --dir "$download_dir"
+            python3 scripts/verify-release-assets.py \
+              --local-dir dist \
+              --compare-dir "$download_dir" \
+              --basename "$RELEASE_BASENAME"
+          }
+
+          python3 scripts/verify-release-assets.py \
+            --local-dir dist \
+            --basename "$RELEASE_BASENAME"
+          download_and_compare_release
+          verify_remote_tag
+          test "$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
+              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
+          )" = "draft" || {
+            echo "::error title=Release state::Release is no longer an exact normal draft before publish."
+            exit 1
+          }
+          verify_remote_tag
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          verify_remote_tag
+          test "$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
+              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
+          )" = "published"
+
+      - name: Verify public release assets and attestations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          download_dir="$(mktemp -d "${RUNNER_TEMP}/release-final.XXXXXXXX")"
+          gh release download "$RELEASE_TAG" --dir "$download_dir"
+          python3 scripts/verify-release-assets.py \
+            --local-dir dist \
+            --compare-dir "$download_dir" \
+            --basename "$RELEASE_BASENAME"
+
+          test "$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$RELEASE_TAG" \
+              --jq 'if .prerelease then "prerelease" elif .draft then "draft" else "published" end'
+          )" = "published" || {
+            echo "::error title=Release state::Final release is not a normal public release."
+            exit 1
+          }
+
+          remote_refs="$(
+            git ls-remote --tags origin \
+              "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}"
+          )"
+          remote_object="$(
+            printf '%s\n' "$remote_refs" |
+              awk -v ref="refs/tags/$RELEASE_TAG" '$2 == ref { print $1 }'
+          )"
+          remote_commit="$(
+            printf '%s\n' "$remote_refs" |
+              awk -v ref="refs/tags/$RELEASE_TAG^{}" '$2 == ref { print $1 }'
+          )"
+          test "$remote_object" = "$RELEASE_TAG_OBJECT"
+          test "$remote_commit" = "$RELEASE_TAG_COMMIT"
+          test "$remote_commit" = "$RELEASE_EVENT_COMMIT"
+
+          provenance_payloads=(
+            "${RELEASE_BASENAME}.zip"
+            "${RELEASE_BASENAME}.tar.gz"
+            "${RELEASE_BASENAME}.spdx.json"
+          )
+          for filename in "${provenance_payloads[@]}"; do
+            gh attestation verify "$download_dir/$filename" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$RELEASE_TAG" \
+              --source-digest "$RELEASE_TAG_COMMIT" \
+              --predicate-type "https://slsa.dev/provenance/v1"
+          done
+
+          sbom_payloads=(
+            "${RELEASE_BASENAME}.zip"
+            "${RELEASE_BASENAME}.tar.gz"
+          )
+          for filename in "${sbom_payloads[@]}"; do
+            gh attestation verify "$download_dir/$filename" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$RELEASE_TAG" \
+              --source-digest "$RELEASE_TAG_COMMIT" \
+              --predicate-type "https://spdx.dev/Document/v2.3"
+          done

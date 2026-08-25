@@ -1,8 +1,14 @@
+# Local authentication and endpoint overrides.
 codex-auth.json
 downloads.local.json
 codex-skills.zip
+.env
+.env.*
+!.env.example
+
+# Release outputs and downloaded installers are never source files.
+dist/
 *.exe
-!Codex Installer.exe
 *.msi
 *.pkg
 *.zip
@@ -10,6 +16,12 @@ codex-skills.zip
 *.tar
 *.tar.gz
 *.tgz
+
+# Logs, editor state, and language caches.
 *.log
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
 .DS_Store
 Thumbs.db

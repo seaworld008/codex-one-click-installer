@@ -1,10 +1,11 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 title Codex Updater
 
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_FILE=%SCRIPT_DIR%install-codex.ps1"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+set "EXIT_CODE=0"
 if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" (
   set "POWERSHELL_EXE=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 )
@@ -17,20 +18,25 @@ echo.
 
 if not exist "%SCRIPT_FILE%" (
   echo install-codex.ps1 was not found:
-  echo %SCRIPT_FILE%
+  echo "%SCRIPT_FILE%"
   echo.
   echo Make sure this file and install-codex.ps1 are in the same extracted folder.
-  goto :end
+  set "EXIT_CODE=2"
+  goto :finish
 )
 
 if not exist "%POWERSHELL_EXE%" (
   echo powershell.exe was not found. Cannot continue.
-  echo Please run this on Windows 8/8.1/10/11.
-  goto :end
+  echo Windows PowerShell 5.1 on Windows 10/11 is required.
+  set "EXIT_CODE=3"
+  goto :finish
 )
 
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_FILE%" -Update
+"%POWERSHELL_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_FILE%" -Update -InstallDesktopApp -NoPause
+set "EXIT_CODE=%ERRORLEVEL%"
 
-:end
+:finish
 echo.
-pause
+echo Updater exit code: %EXIT_CODE%
+pause >nul
+endlocal & exit /b %EXIT_CODE%
