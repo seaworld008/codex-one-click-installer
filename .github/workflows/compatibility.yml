@@ -303,6 +303,7 @@ jobs:
               }
             }
           }
+          exit 0
 
       - name: Reject test-only overrides outside CheckOnly
         shell: powershell
@@ -329,6 +330,7 @@ jobs:
           if (($output | Out-String) -notmatch "CheckOnly") {
             throw "Test-only override rejection did not explain the CheckOnly requirement."
           }
+          exit 0
 
       - name: Validate desktop application minimum Windows build
         shell: powershell
@@ -391,6 +393,7 @@ jobs:
               throw "$($case.Name) did not report $($case.ExpectedPattern)."
             }
           }
+          exit 0
 
       - name: Validate custom standalone directory boundaries
         shell: powershell
@@ -434,6 +437,7 @@ jobs:
           } finally {
             $env:CODEX_INSTALL_DIR = $original
           }
+          exit 0
 
   gate:
     name: Compatibility gate

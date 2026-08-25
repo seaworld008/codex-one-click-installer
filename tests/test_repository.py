@@ -279,6 +279,18 @@ class RepositoryContractTests(unittest.TestCase):
             f"{ACTIONLINT_V1_7_12}",
             workflow,
         )
+        powershell_steps = re.split(r"(?m)^      - name: ", workflow)
+        native_exit_steps = [
+            step for step in powershell_steps if "$LASTEXITCODE" in step
+        ]
+        self.assertEqual(len(native_exit_steps), 4)
+        for step in native_exit_steps:
+            self.assertRegex(
+                step,
+                r"(?m)^          exit 0\s*$",
+                "PowerShell CI steps that accept expected native failures must "
+                "reset the process exit code explicitly",
+            )
 
     def test_release_automation_uses_shared_aggregate_and_exact_tag(self) -> None:
         workflow = read(".github/workflows/release.yml")
