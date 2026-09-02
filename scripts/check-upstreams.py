@@ -150,6 +150,19 @@ def validate_sha512_integrity(value: object) -> None:
         raise ProbeError("npm latest metadata SHA-512 integrity is not 64 bytes")
 
 
+def validate_linux_package_prefix(filename: str, body: bytes) -> None:
+    if filename.endswith(".deb"):
+        expected = b"!<arch>\n"
+        package_type = "Debian"
+    elif filename.endswith(".rpm"):
+        expected = b"\xed\xab\xee\xdb"
+        package_type = "RPM"
+    else:
+        raise ProbeError(f"unsupported Linux package filename: {filename}")
+    if not body.startswith(expected):
+        raise ProbeError(f"{filename} did not return a {package_type} package prefix")
+
+
 def check_bootstraps() -> None:
     for label, (url, prefix, marker) in BOOTSTRAPS.items():
         response = fetch(url, limit=1024 * 1024)
@@ -270,6 +283,7 @@ def check_linux_app() -> None:
             raise ProbeError(f"Linux documentation no longer references {filename}")
 
     for label, url in LINUX_PACKAGES.items():
+        filename = url.rsplit("/", 1)[-1]
         package = fetch(
             url,
             limit=16,
@@ -278,6 +292,7 @@ def check_linux_app() -> None:
         )
         if package.status not in {200, 206}:
             raise ProbeError(f"{label} returned HTTP {package.status}")
+        validate_linux_package_prefix(filename, package.body)
         total_bytes = parse_bounded_total_bytes(
             package,
             label,

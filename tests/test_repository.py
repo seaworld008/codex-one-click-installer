@@ -600,6 +600,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('headers={"Range": "bytes=0-7"', source)
         self.assertIn("minimum=10 * 1024 * 1024", source)
         self.assertIn("maximum=800 * 1024 * 1024", source)
+        self.assertIn('expected = b"!<arch>\\n"', source)
+        self.assertIn('expected = b"\\xed\\xab\\xee\\xdb"', source)
 
     def test_windows_downloads_are_bounded_and_msix_identity_is_verified(
         self,
@@ -892,6 +894,44 @@ class RepositoryContractTests(unittest.TestCase):
                 call_log,
             )
 
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                'for argument in "$@"; do url="$argument"; done\n'
+                'case "$url" in\n'
+                "  https://releases.openai.com/*) "
+                "dd if=/dev/zero bs=1048576 count=2 2>/dev/null ;;\n"
+                "  https://github.com/openai/codex/releases/*) "
+                'exec /bin/cat "$FAKE_BOOTSTRAP" ;;\n'
+                "  *) exit 22 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            oversize_fallback = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install-codex-unix.sh"),
+                    "--check-only",
+                    "--verify-downloads",
+                    "--non-interactive",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                oversize_fallback.returncode,
+                0,
+                oversize_fallback.stderr,
+            )
+            self.assertIn("超过安全上限", oversize_fallback.stderr)
+            self.assertIn(
+                "bootstrap 来源：OpenAI GitHub Release",
+                oversize_fallback.stdout,
+            )
+
     def test_linux_app_retry_discards_partial_response(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1156,6 +1196,24 @@ class UpstreamProbeTests(unittest.TestCase):
             with self.subTest(value=invalid):
                 with self.assertRaises(self.probes.ProbeError):
                     self.probes.validate_sha512_integrity(invalid)
+
+    def test_linux_package_prefix_requires_deb_or_rpm_magic(self) -> None:
+        self.probes.validate_linux_package_prefix(
+            "chatgpt_amd64.deb",
+            b"!<arch>\nrest",
+        )
+        self.probes.validate_linux_package_prefix(
+            "chatgpt.x86_64.rpm",
+            b"\xed\xab\xee\xdbrest",
+        )
+        for filename, body in (
+            ("chatgpt_amd64.deb", b"<html>"),
+            ("chatgpt.x86_64.rpm", b"PK\x03\x04"),
+            ("chatgpt.bin", b"!<arch>\n"),
+        ):
+            with self.subTest(filename=filename):
+                with self.assertRaises(self.probes.ProbeError):
+                    self.probes.validate_linux_package_prefix(filename, body)
 
 
 class ReleaseAssetVerificationTests(unittest.TestCase):

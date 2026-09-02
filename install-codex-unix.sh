@@ -652,7 +652,9 @@ download_bootstrap_candidate() {
 
     bytes="$(wc -c <"$part" | tr -d '[:space:]' || true)"
     if [ -n "$bytes" ] && [ "$bytes" -gt "$BOOTSTRAP_MAX_BYTES" ]; then
-      die "bootstrap 下载超过安全上限 $BOOTSTRAP_MAX_BYTES 字节。"
+      warn "bootstrap 候选下载超过安全上限 $BOOTSTRAP_MAX_BYTES 字节，已拒绝该来源。"
+      rm -f "$part"
+      return 1
     fi
     rm -f "$part"
     attempt=$((attempt + 1))
