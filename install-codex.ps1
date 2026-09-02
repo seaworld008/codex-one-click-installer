@@ -7,6 +7,8 @@ param(
     [switch]$Update,
     [ValidateSet("standalone", "npm")]
     [string]$CliMethod = "standalone",
+    [ValidateSet("auto", "official", "github")]
+    [string]$NetworkMode = "auto",
     [string]$Release = "latest",
     [switch]$InstallDesktopApp,
     [switch]$RequireDesktopApp,
@@ -30,6 +32,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $OfficialBootstrapUrl = "https://releases.openai.com/codex/install.ps1"
 $OfficialLatestChannelUrl = "https://releases.openai.com/codex/channels/latest"
+$GithubBootstrapLatestUrl = "https://github.com/openai/codex/releases/latest/download/install.ps1"
 $DesktopStoreId = "9PLM9XGG6VKS"
 $DesktopMsixX64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix"
 $DesktopMsixArm64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix"
@@ -42,6 +45,7 @@ $script:BootstrapPath = $null
 $script:DesktopMsixPath = $null
 $script:NpmExecutable = $null
 $script:ValidatedCodexInstallDir = $null
+$script:BootstrapSource = $null
 
 try {
     [Console]::OutputEncoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
@@ -406,9 +410,16 @@ function Show-Plan {
     Write-Line "架构：$Architecture" White
     Write-Line "操作：Codex CLI $ActionName" White
     Write-Line "CLI 安装方式：$CliMethod" White
+    Write-Line "网络模式：$NetworkMode" White
     Write-Line "CLI 版本：$($Release.Trim())" White
     if ($CliMethod -eq "standalone") {
-        Write-Line "官方 bootstrap：$(Get-SafeUrl $OfficialBootstrapUrl)" White
+        if ($NetworkMode -eq "auto") {
+            Write-Line "官方 bootstrap：优先 OpenAI CDN；短时不可用时自动切换 OpenAI GitHub Release" White
+        } elseif ($NetworkMode -eq "github") {
+            Write-Line "官方 bootstrap：OpenAI GitHub Release" White
+        } else {
+            Write-Line "官方 bootstrap：$(Get-SafeUrl $OfficialBootstrapUrl)" White
+        }
         Write-Line "官方发布通道：$(Get-SafeUrl $OfficialLatestChannelUrl)" DarkGray
     } elseif (-not [string]::IsNullOrWhiteSpace($NpmRegistry)) {
         Write-Line "npm registry（仅本次 npm 子进程环境，不写 .npmrc）：$(Get-SafeUrl $NpmRegistry)" White
@@ -493,7 +504,8 @@ function Download-File {
         [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][string]$OutFile,
         [long]$MinimumBytes = 1,
-        [Parameter(Mandatory=$true)][long]$MaximumBytes
+        [Parameter(Mandatory=$true)][long]$MaximumBytes,
+        [int]$TimeoutMilliseconds = 300000
     )
 
     Write-Step "下载 $Name"
@@ -526,8 +538,8 @@ function Download-File {
         $request.Method = "GET"
         $request.AllowAutoRedirect = $true
         $request.MaximumAutomaticRedirections = 10
-        $request.Timeout = 300000
-        $request.ReadWriteTimeout = 300000
+        $request.Timeout = $TimeoutMilliseconds
+        $request.ReadWriteTimeout = $TimeoutMilliseconds
         $request.UserAgent = "codex-one-click-installer/2.0"
         $request.AutomaticDecompression = (
             [System.Net.DecompressionMethods]::GZip -bor
@@ -589,6 +601,61 @@ function Download-File {
         throw "$Name 下载大小超出允许范围（实际 $length 字节；允许 $MinimumBytes..$MaximumBytes 字节）。"
     }
     Write-Success "$Name 下载完成（$length 字节）。"
+}
+
+function Get-GithubBootstrapUrl {
+    $requested = $Release.Trim()
+    if ($requested -eq "latest") {
+        return $GithubBootstrapLatestUrl
+    }
+    $normalized = $requested
+    if ($normalized.StartsWith("rust-v", [System.StringComparison]::Ordinal)) {
+        $normalized = $normalized.Substring(6)
+    } elseif ($normalized.StartsWith("v", [System.StringComparison]::Ordinal)) {
+        $normalized = $normalized.Substring(1)
+    }
+    return "https://github.com/openai/codex/releases/download/rust-v$normalized/install.ps1"
+}
+
+function Download-OfficialBootstrap {
+    param([Parameter(Mandatory=$true)][string]$OutFile)
+
+    $downloadArguments = @{
+        Name = "OpenAI 官方 Codex bootstrap"
+        OutFile = $OutFile
+        MinimumBytes = 4096
+        MaximumBytes = 2097152
+    }
+
+    if ($NetworkMode -eq "official") {
+        Download-File @downloadArguments -Url $OfficialBootstrapUrl
+        $script:BootstrapSource = "releases"
+        return
+    }
+    if ($NetworkMode -eq "github") {
+        Download-File @downloadArguments -Url (Get-GithubBootstrapUrl) -TimeoutMilliseconds 180000
+        $script:BootstrapSource = "github"
+        return
+    }
+
+    try {
+        Download-File @downloadArguments -Url $OfficialBootstrapUrl -TimeoutMilliseconds 15000
+        $script:BootstrapSource = "releases"
+        return
+    } catch {
+        Write-Warn "OpenAI CDN 快速探测未通过，自动切换 OpenAI GitHub Release，避免等待长超时：$(Protect-LogText $_.Exception.Message)"
+    }
+
+    try {
+        Download-File @downloadArguments -Url (Get-GithubBootstrapUrl) -TimeoutMilliseconds 120000
+        $script:BootstrapSource = "github"
+        return
+    } catch {
+        Write-Warn "OpenAI GitHub Release 也未快速完成，最后重试 OpenAI CDN：$(Protect-LogText $_.Exception.Message)"
+    }
+
+    Download-File @downloadArguments -Url $OfficialBootstrapUrl
+    $script:BootstrapSource = "releases"
 }
 
 function Test-OfficialBootstrap {
@@ -765,6 +832,7 @@ function Invoke-StandaloneInstall {
 
     $oldNonInteractive = [Environment]::GetEnvironmentVariable("CODEX_NON_INTERACTIVE", "Process")
     $oldInstallDirectory = [Environment]::GetEnvironmentVariable("CODEX_INSTALL_DIR", "Process")
+    $oldReleasePreference = [Environment]::GetEnvironmentVariable("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", "Process")
     try {
         if ($NonInteractive) {
             [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", "1", "Process")
@@ -776,10 +844,19 @@ function Invoke-StandaloneInstall {
                 "Process"
             )
         }
+        if ($script:BootstrapSource -eq "github") {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+                "false",
+                "Process"
+            )
+            Write-Info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+        }
         $result = Invoke-NativeCommand -Path $powerShell -Arguments $arguments -DisplayName "官方 install.ps1 -Release $($RequestedRelease.Trim())"
     } finally {
         [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", $oldNonInteractive, "Process")
         [Environment]::SetEnvironmentVariable("CODEX_INSTALL_DIR", $oldInstallDirectory, "Process")
+        [Environment]::SetEnvironmentVariable("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", $oldReleasePreference, "Process")
     }
 
     if ($result.ExitCode -ne 0) {
@@ -1358,13 +1435,9 @@ try {
 
     if ($CliMethod -eq "standalone" -or $VerifyDownloads) {
         $script:BootstrapPath = Join-Path $script:WorkDir ("official-bootstrap-" + [guid]::NewGuid().ToString("N") + ".ps1")
-        Download-File `
-            -Name "OpenAI 官方 Codex bootstrap" `
-            -Url $OfficialBootstrapUrl `
-            -OutFile $script:BootstrapPath `
-            -MinimumBytes 4096 `
-            -MaximumBytes 2097152
+        Download-OfficialBootstrap -OutFile $script:BootstrapPath
         $null = Test-OfficialBootstrap -Path $script:BootstrapPath -ExpectedSha256 $BootstrapSha256
+        Write-Success "bootstrap 来源：$(if ($script:BootstrapSource -eq 'github') { 'OpenAI GitHub Release' } else { 'OpenAI CDN' })"
     }
 
     if ($CheckOnly) {

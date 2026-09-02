@@ -587,7 +587,7 @@ class RepositoryContractTests(unittest.TestCase):
             "[Parameter(Mandatory=$true)][long]$MaximumBytes",
             "$response.ContentLength -gt $MaximumBytes",
             "$totalBytes + [long]$bytesRead -gt $MaximumBytes",
-            "-MaximumBytes 2097152",
+            "MaximumBytes = 2097152",
             "-MinimumBytes 1048576",
             "-MaximumBytes 1073741824",
             '$expectedName = "OpenAI.Codex"',
@@ -602,6 +602,11 @@ class RepositoryContractTests(unittest.TestCase):
             "CODEX_INSTALL_DIR 不得解析为驱动器根或 UNC 共享根",
             "$script:ValidatedCodexInstallDir",
             "(?![0-9A-Za-z.+-])",
+            "https://github.com/openai/codex/releases/latest/download/install.ps1",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+            "OpenAI CDN 快速探测未通过",
+            '[ValidateSet("auto", "official", "github")]',
+            "function Download-OfficialBootstrap",
         ):
             self.assertIn(contract, windows)
         self.assertNotIn('Arguments @("--registry"', windows)
