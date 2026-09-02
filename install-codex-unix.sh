@@ -540,37 +540,58 @@ validate_bootstrap() {
   local file="$1"
   local bytes first_line actual expected
 
-  [ -f "$file" ] || die "bootstrap 下载后不存在。"
+  if [ ! -f "$file" ]; then
+    warn "bootstrap 下载后不存在。"
+    return 1
+  fi
   bytes="$(wc -c <"$file" | tr -d '[:space:]')"
   case "$bytes" in
     ''|*[!0-9]*)
-      die "无法判断 bootstrap 大小。"
+      warn "无法判断 bootstrap 大小。"
+      return 1
       ;;
   esac
-  [ "$bytes" -ge "$BOOTSTRAP_MIN_BYTES" ] ||
-    die "bootstrap 仅 $bytes 字节，疑似错误页或截断响应。"
-  [ "$bytes" -le "$BOOTSTRAP_MAX_BYTES" ] ||
-    die "bootstrap 达到 $bytes 字节，超过安全上限。"
+  if [ "$bytes" -lt "$BOOTSTRAP_MIN_BYTES" ]; then
+    warn "bootstrap 仅 $bytes 字节，疑似错误页或截断响应。"
+    return 1
+  fi
+  if [ "$bytes" -gt "$BOOTSTRAP_MAX_BYTES" ]; then
+    warn "bootstrap 达到 $bytes 字节，超过安全上限。"
+    return 1
+  fi
 
   first_line="$(head -n 1 "$file")"
   case "$first_line" in
     '#!'*sh*)
       ;;
     *)
-      die "bootstrap 没有预期的 shell shebang。"
+      warn "bootstrap 没有预期的 shell shebang。"
+      return 1
       ;;
   esac
 
-  LC_ALL=C grep -Iq '^' "$file" || die "bootstrap 不是文本 shell 脚本。"
-  grep -q 'CODEX_RELEASE' "$file" ||
-    die "bootstrap 缺少预期的 CODEX_RELEASE 标识。"
-  grep -q -- '--release' "$file" ||
-    die "bootstrap 缺少预期的 --release 接口。"
-  grep -q 'Codex CLI' "$file" ||
-    die "bootstrap 缺少预期的 Codex CLI 标识。"
+  if ! LC_ALL=C grep -Iq '^' "$file"; then
+    warn "bootstrap 不是文本 shell 脚本。"
+    return 1
+  fi
+  if ! grep -q 'CODEX_RELEASE' "$file"; then
+    warn "bootstrap 缺少预期的 CODEX_RELEASE 标识。"
+    return 1
+  fi
+  if ! grep -q -- '--release' "$file"; then
+    warn "bootstrap 缺少预期的 --release 接口。"
+    return 1
+  fi
+  if ! grep -q 'Codex CLI' "$file"; then
+    warn "bootstrap 缺少预期的 Codex CLI 标识。"
+    return 1
+  fi
 
-  actual="$(sha256_file "$file" | LC_ALL=C tr 'A-F' 'a-f')" ||
-    die "无法计算 bootstrap SHA-256。"
+  if ! actual="$(sha256_file "$file")"; then
+    warn "无法计算 bootstrap SHA-256。"
+    return 1
+  fi
+  actual="$(printf '%s' "$actual" | LC_ALL=C tr 'A-F' 'a-f')"
   info "bootstrap SHA-256：$actual"
 
   if [ -n "${CODEX_BOOTSTRAP_SHA256:-}" ]; then
@@ -578,12 +599,16 @@ validate_bootstrap() {
       LC_ALL=C tr 'A-F' 'a-f')"
     if ! printf '%s\n' "$expected" |
       LC_ALL=C grep -Eq '^[0-9a-f]{64}$'; then
-      die "CODEX_BOOTSTRAP_SHA256 必须是 64 位十六进制值。"
+      warn "CODEX_BOOTSTRAP_SHA256 必须是 64 位十六进制值。"
+      return 1
     fi
-    [ "$actual" = "$expected" ] ||
-      die "bootstrap SHA-256 与 CODEX_BOOTSTRAP_SHA256 不一致。"
+    if [ "$actual" != "$expected" ]; then
+      warn "bootstrap SHA-256 与 CODEX_BOOTSTRAP_SHA256 不一致。"
+      return 1
+    fi
     info "bootstrap SHA-256 pin 校验通过。"
   fi
+  return 0
 }
 
 github_bootstrap_url() {
@@ -615,7 +640,14 @@ download_bootstrap_candidate() {
       head -c "$((BOOTSTRAP_MAX_BYTES + 1))" >"$part"; then
       mv "$part" "$target" ||
         die "无法将已下载 bootstrap 移入私有目标路径。"
-      return 0
+      chmod 600 "$target" || die "无法设置 bootstrap 私有权限。"
+      if validate_bootstrap "$target"; then
+        return 0
+      fi
+      warn "当前 bootstrap 候选未通过校验，尝试下一候选或重试。"
+      rm -f "$target"
+      attempt=$((attempt + 1))
+      continue
     fi
 
     bytes="$(wc -c <"$part" | tr -d '[:space:]' || true)"
@@ -664,8 +696,6 @@ download_bootstrap() {
     fi
   fi
 
-  chmod 600 "$target" || die "无法设置 bootstrap 私有权限。"
-  validate_bootstrap "$target"
   info "bootstrap 来源：$(if [ "$BOOTSTRAP_SOURCE" = "github" ]; then printf 'OpenAI GitHub Release'; elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then printf 'OpenAI CDN'; else printf '组织自定义入口'; fi)"
 }
 

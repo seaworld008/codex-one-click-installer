@@ -609,7 +609,7 @@ class RepositoryContractTests(unittest.TestCase):
             "[Parameter(Mandatory=$true)][long]$MaximumBytes",
             "$response.ContentLength -gt $MaximumBytes",
             "$totalBytes + [long]$bytesRead -gt $MaximumBytes",
-            "MaximumBytes = 2097152",
+            "-MaximumBytes 2097152",
             "-MinimumBytes 1048576",
             "-MaximumBytes 1073741824",
             '$expectedName = "OpenAI.Codex"',
@@ -628,9 +628,21 @@ class RepositoryContractTests(unittest.TestCase):
             "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
             "OpenAI CDN 快速探测未通过",
             '[ValidateSet("auto", "official", "github")]',
+            "function Download-AndValidateOfficialBootstrap",
             "function Download-OfficialBootstrap",
         ):
             self.assertIn(contract, windows)
+        helper = windows.split(
+            "function Download-AndValidateOfficialBootstrap", maxsplit=1
+        )[1].split("function Download-OfficialBootstrap", maxsplit=1)[0]
+        self.assertLess(
+            helper.index("Download-File"),
+            helper.index("Test-OfficialBootstrap"),
+        )
+        self.assertIn(
+            "Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue",
+            helper,
+        )
         self.assertNotIn('Arguments @("--registry"', windows)
         self.assertIn('"npm_config_registry", $NpmRegistry.Trim()', windows)
 
@@ -788,7 +800,9 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertIn("超过安全上限", oversize_result.stderr)
             self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
 
-    def test_unix_auto_network_falls_back_to_official_github_release(self) -> None:
+    def test_unix_auto_network_rejects_invalid_cdn_payload_and_falls_back(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             fake_bin = base / "bin"
@@ -811,7 +825,9 @@ class RepositoryContractTests(unittest.TestCase):
                 'for argument in "$@"; do url="$argument"; done\n'
                 'printf "%s\\n" "$url" >>"$FAKE_CURL_CALLS"\n'
                 'case "$url" in\n'
-                "  https://releases.openai.com/*) exit 22 ;;\n"
+                "  https://releases.openai.com/*) "
+                "printf '<!doctype html>\\n'; "
+                "dd if=/dev/zero bs=4096 count=2 2>/dev/null ;;\n"
                 "  https://github.com/openai/codex/releases/*) "
                 'exec /bin/cat "$FAKE_BOOTSTRAP" ;;\n'
                 "  *) exit 22 ;;\n"
@@ -844,6 +860,7 @@ class RepositoryContractTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("未通过校验", result.stderr)
             self.assertIn("自动切换 OpenAI GitHub Release", result.stdout)
             self.assertIn("bootstrap 来源：OpenAI GitHub Release", result.stdout)
             call_log = calls.read_text(encoding="utf-8")

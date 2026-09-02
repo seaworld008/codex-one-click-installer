@@ -608,29 +608,44 @@ function Get-GithubBootstrapUrl {
     return $GithubBootstrapLatestUrl
 }
 
+function Download-AndValidateOfficialBootstrap {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [int]$TimeoutMilliseconds = 300000
+    )
+
+    try {
+        Download-File `
+            -Name "OpenAI 官方 Codex bootstrap" `
+            -Url $Url `
+            -OutFile $OutFile `
+            -MinimumBytes 4096 `
+            -MaximumBytes 2097152 `
+            -TimeoutMilliseconds $TimeoutMilliseconds
+        $null = Test-OfficialBootstrap -Path $OutFile -ExpectedSha256 $BootstrapSha256
+    } catch {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
 function Download-OfficialBootstrap {
     param([Parameter(Mandatory=$true)][string]$OutFile)
 
-    $downloadArguments = @{
-        Name = "OpenAI 官方 Codex bootstrap"
-        OutFile = $OutFile
-        MinimumBytes = 4096
-        MaximumBytes = 2097152
-    }
-
     if ($NetworkMode -eq "official") {
-        Download-File @downloadArguments -Url $OfficialBootstrapUrl
+        Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile
         $script:BootstrapSource = "releases"
         return
     }
     if ($NetworkMode -eq "github") {
-        Download-File @downloadArguments -Url (Get-GithubBootstrapUrl) -TimeoutMilliseconds 180000
+        Download-AndValidateOfficialBootstrap -Url (Get-GithubBootstrapUrl) -OutFile $OutFile -TimeoutMilliseconds 180000
         $script:BootstrapSource = "github"
         return
     }
 
     try {
-        Download-File @downloadArguments -Url $OfficialBootstrapUrl -TimeoutMilliseconds 15000
+        Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile -TimeoutMilliseconds 15000
         $script:BootstrapSource = "releases"
         return
     } catch {
@@ -638,14 +653,14 @@ function Download-OfficialBootstrap {
     }
 
     try {
-        Download-File @downloadArguments -Url (Get-GithubBootstrapUrl) -TimeoutMilliseconds 120000
+        Download-AndValidateOfficialBootstrap -Url (Get-GithubBootstrapUrl) -OutFile $OutFile -TimeoutMilliseconds 120000
         $script:BootstrapSource = "github"
         return
     } catch {
         Write-Warn "OpenAI GitHub Release 也未快速完成，最后重试 OpenAI CDN：$(Protect-LogText $_.Exception.Message)"
     }
 
-    Download-File @downloadArguments -Url $OfficialBootstrapUrl
+    Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile
     $script:BootstrapSource = "releases"
 }
 
@@ -1450,7 +1465,6 @@ try {
     if ($CliMethod -eq "standalone" -or $VerifyDownloads) {
         $script:BootstrapPath = Join-Path $script:WorkDir ("official-bootstrap-" + [guid]::NewGuid().ToString("N") + ".ps1")
         Download-OfficialBootstrap -OutFile $script:BootstrapPath
-        $null = Test-OfficialBootstrap -Path $script:BootstrapPath -ExpectedSha256 $BootstrapSha256
         Write-Success "bootstrap 来源：$(if ($script:BootstrapSource -eq 'github') { 'OpenAI GitHub Release' } else { 'OpenAI CDN' })"
     }
 
