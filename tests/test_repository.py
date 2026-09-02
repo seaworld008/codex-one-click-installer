@@ -868,6 +868,7 @@ class RepositoryContractTests(unittest.TestCase):
             'name" = "chatgpt',
             "LINUX_APP_MAX_BYTES=838860800",
             "--skip-app",
+            "(trap - EXIT; install_linux_app)",
         ):
             self.assertIn(contract, unix)
 

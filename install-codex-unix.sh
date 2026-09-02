@@ -885,7 +885,9 @@ install_app() {
       warn "PARTIAL：$LINUX_APP_REASON CLI 已安装并验证。"
       return
     fi
-    if (install_linux_app); then
+    # App 是可选组件时在子 shell 中隔离 die/exit；关闭子 shell 的 EXIT
+    # trap，避免一次 App 失败提前删除主流程仍需保留的日志和工作目录。
+    if (trap - EXIT; install_linux_app); then
       return
     fi
     if [ "$REQUIRE_APP" = "1" ]; then
