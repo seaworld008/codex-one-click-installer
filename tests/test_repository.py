@@ -660,6 +660,9 @@ class RepositoryContractTests(unittest.TestCase):
             'target="$WORK_DIR/install.sh"',
             'mv "$part" "$target"',
             '/bin/sh "$WORK_DIR/install.sh"',
+            "https://github.com/openai/codex/releases/latest/download/install.sh",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false",
+            "--network 仅支持 auto、official 或 github",
         ):
             self.assertIn(contract, unix)
         self.assertIn("[^0-9A-Za-z.+-]", unix)
@@ -733,6 +736,71 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertEqual(state.read_text(encoding="utf-8").strip(), "2")
             self.assertIn("bootstrap 下载与内容校验通过", retry_result.stdout)
             self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
+
+    def test_unix_auto_network_falls_back_to_official_github_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            fake_bin = base / "bin"
+            temp_root = base / "tmp"
+            fake_bin.mkdir()
+            temp_root.mkdir()
+            fake_curl = fake_bin / "curl"
+            valid_bootstrap = base / "valid-install.sh"
+            valid_bootstrap.write_text(
+                "#!/bin/sh\n"
+                "# Codex CLI official-compatible test fixture\n"
+                "CODEX_RELEASE=latest\n"
+                "# supports --release\n"
+                + ("# bounded fixture padding\n" * 64),
+                encoding="utf-8",
+            )
+            calls = base / "calls"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                'for argument in "$@"; do url="$argument"; done\n'
+                'printf "%s\\n" "$url" >>"$FAKE_CURL_CALLS"\n'
+                'case "$url" in\n'
+                "  https://releases.openai.com/*) exit 22 ;;\n"
+                "  https://github.com/openai/codex/releases/*) "
+                'exec /bin/cat "$FAKE_BOOTSTRAP" ;;\n'
+                "  *) exit 22 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "TMPDIR": str(temp_root),
+                "FAKE_CURL_CALLS": str(calls),
+                "FAKE_BOOTSTRAP": str(valid_bootstrap),
+                "CODEX_TEST_UNAME_S": "Linux",
+                "CODEX_TEST_ARCH": "x86_64",
+                "CODEX_TEST_OS_VERSION": "Test Linux",
+            }
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install-codex-unix.sh"),
+                    "--check-only",
+                    "--verify-downloads",
+                    "--non-interactive",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("自动切换 OpenAI GitHub Release", result.stdout)
+            self.assertIn("bootstrap 来源：OpenAI GitHub Release", result.stdout)
+            call_log = calls.read_text(encoding="utf-8")
+            self.assertIn("https://releases.openai.com/codex/install.sh", call_log)
+            self.assertIn(
+                "https://github.com/openai/codex/releases/latest/download/install.sh",
+                call_log,
+            )
 
             fake_curl.write_text(
                 "#!/bin/sh\n"

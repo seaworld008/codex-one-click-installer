@@ -12,11 +12,13 @@ umask 077
 OFFICIAL_BOOTSTRAP_ENTRY_URL="https://chatgpt.com/codex/install.sh"
 OFFICIAL_BOOTSTRAP_URL="https://releases.openai.com/codex/install.sh"
 BOOTSTRAP_URL="${CODEX_BOOTSTRAP_URL:-$OFFICIAL_BOOTSTRAP_URL}"
+GITHUB_BOOTSTRAP_LATEST_URL="https://github.com/openai/codex/releases/latest/download/install.sh"
 BOOTSTRAP_MIN_BYTES=1024
 BOOTSTRAP_MAX_BYTES=1048576
 
 UPDATE=0
 METHOD="standalone"
+NETWORK_MODE="${CODEX_NETWORK_MODE:-auto}"
 RELEASE="${CODEX_RELEASE:-latest}"
 CHECK_ONLY=0
 VERIFY_DOWNLOADS=0
@@ -33,6 +35,7 @@ WORK_DIR=""
 LOG_FILE=""
 CODEX_BIN=""
 NPM_ENV=()
+BOOTSTRAP_SOURCE=""
 
 usage() {
   cat <<'EOF'
@@ -43,6 +46,7 @@ usage() {
   --update                    更新 Codex CLI；默认仍使用官方 standalone 安装器
   --release VERSION           安装指定版本（默认：latest）
   --method METHOD             standalone、brew 或 npm（默认：standalone）
+  --network MODE              auto、official 或 github（默认：auto）
   --check-only                仅做只读预检，不安装、不创建用户目录或日志
   --verify-downloads          实际下载并检查官方 standalone bootstrap
   --non-interactive           禁用官方安装器的交互提示
@@ -54,6 +58,7 @@ usage() {
 可选环境变量：
   CODEX_BOOTSTRAP_SHA256      固定 bootstrap 的 64 位 SHA-256
   CODEX_BOOTSTRAP_URL         企业镜像地址；严格 HTTPS 且必须同时提供 SHA-256 pin
+  CODEX_NETWORK_MODE          auto、official 或 github；自定义 bootstrap URL 时忽略
   CODEX_INSTALL_DIR           官方 standalone 安装器的 CLI 目录
   CODEX_NPM_REGISTRY          npm 命令本次使用的 HTTPS registry
   CODEX_NPM_PREFIX            npm 命令本次使用的绝对 prefix
@@ -125,6 +130,15 @@ parse_args() {
       --method=*)
         METHOD="${1#*=}"
         [ -n "$METHOD" ] || die "--method 需要一个参数。"
+        ;;
+      --network)
+        require_value "$@"
+        NETWORK_MODE="$2"
+        shift
+        ;;
+      --network=*)
+        NETWORK_MODE="${1#*=}"
+        [ -n "$NETWORK_MODE" ] || die "--network 需要一个参数。"
         ;;
       --check-only)
         CHECK_ONLY=1
@@ -218,6 +232,14 @@ validate_options() {
       ;;
     *)
       die "--method 仅支持 standalone、brew 或 npm。"
+      ;;
+  esac
+
+  case "$NETWORK_MODE" in
+    auto|official|github)
+      ;;
+    *)
+      die "--network 仅支持 auto、official 或 github。"
       ;;
   esac
 
@@ -392,9 +414,19 @@ show_plan() {
   info "系统：$OS_NAME $OS_VERSION"
   info "架构：$ARCH"
   info "安装方法：$METHOD"
+  info "网络模式：$NETWORK_MODE"
   info "目标版本：$RELEASE"
   if [ "$METHOD" = "standalone" ]; then
-    info "官方 bootstrap：$BOOTSTRAP_URL"
+    if [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_URL" ] &&
+      [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_ENTRY_URL" ]; then
+      info "bootstrap：$BOOTSTRAP_URL（组织自定义并要求 SHA-256 pin）"
+    elif [ "$NETWORK_MODE" = "auto" ]; then
+      info "bootstrap：优先 OpenAI CDN；短时不可用时自动切换 OpenAI GitHub Release"
+    elif [ "$NETWORK_MODE" = "github" ]; then
+      info "bootstrap：OpenAI GitHub Release"
+    else
+      info "bootstrap：$BOOTSTRAP_URL"
+    fi
     info "bootstrap 将先下载到 0700 随机临时目录，检查后再执行（不会 pipe-to-sh）。"
   fi
   if [ "$INSTALL_APP" = "1" ]; then
@@ -500,17 +532,23 @@ validate_bootstrap() {
   fi
 }
 
-download_bootstrap() {
-  local target part bytes attempt=1
-  ensure_work_dir
-  target="$WORK_DIR/install.sh"
+github_bootstrap_url() {
+  if [ "$RELEASE" = "latest" ]; then
+    printf '%s\n' "$GITHUB_BOOTSTRAP_LATEST_URL"
+  else
+    printf 'https://github.com/openai/codex/releases/download/rust-v%s/install.sh\n' "$RELEASE"
+  fi
+}
 
-  step "下载并检查官方 bootstrap"
-  # Each retry starts from a new file so a partial response can never be
-  # concatenated with the next response. head provides an exact streamed
-  # sentinel byte on both old and new curl versions; validate_bootstrap then
-  # applies the declared ceiling.
-  while [ "$attempt" -le 4 ]; do
+download_bootstrap_candidate() {
+  local url="$1"
+  local target="$2"
+  local connect_timeout="$3"
+  local max_time="$4"
+  local max_attempts="$5"
+  local part bytes attempt=1
+
+  while [ "$attempt" -le "$max_attempts" ]; do
     part="$WORK_DIR/install.sh.part.$attempt"
     if curl \
         --disable \
@@ -520,13 +558,13 @@ download_bootstrap() {
         --silent \
         --show-error \
         --location \
-        --connect-timeout 20 \
-        --max-time 180 \
-        "$BOOTSTRAP_URL" |
+        --connect-timeout "$connect_timeout" \
+        --max-time "$max_time" \
+        "$url" |
       head -c "$((BOOTSTRAP_MAX_BYTES + 1))" >"$part"; then
       mv "$part" "$target" ||
         die "无法将已下载 bootstrap 移入私有目标路径。"
-      break
+      return 0
     fi
 
     bytes="$(wc -c <"$part" | tr -d '[:space:]' || true)"
@@ -536,10 +574,48 @@ download_bootstrap() {
     rm -f "$part"
     attempt=$((attempt + 1))
   done
-  [ -f "$target" ] ||
-    die "连续 4 次无法从严格 HTTPS 地址下载 bootstrap：$BOOTSTRAP_URL"
+  return 1
+}
+
+download_bootstrap() {
+  local target github_url
+  ensure_work_dir
+  target="$WORK_DIR/install.sh"
+
+  step "下载并检查官方 bootstrap"
+  # 自定义企业入口只使用已明确配置并固定摘要的 URL，不隐式绕过组织策略。
+  if [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_URL" ] &&
+    [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_ENTRY_URL" ]; then
+    download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 4 ||
+      die "连续 4 次无法从严格 HTTPS 地址下载 bootstrap：$BOOTSTRAP_URL"
+    BOOTSTRAP_SOURCE="custom"
+  elif [ "$NETWORK_MODE" = "github" ]; then
+    github_url="$(github_bootstrap_url)"
+    download_bootstrap_candidate "$github_url" "$target" 15 180 4 ||
+      die "连续 4 次无法从 OpenAI GitHub Release 下载 bootstrap。"
+    BOOTSTRAP_SOURCE="github"
+  elif [ "$NETWORK_MODE" = "official" ]; then
+    download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 4 ||
+      die "连续 4 次无法从 OpenAI 官方 CDN 下载 bootstrap。"
+    BOOTSTRAP_SOURCE="releases"
+  elif download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 5 15 1; then
+    BOOTSTRAP_SOURCE="releases"
+  else
+    warn "OpenAI CDN 快速探测未通过，自动切换 OpenAI GitHub Release，避免等待长超时。"
+    github_url="$(github_bootstrap_url)"
+    if download_bootstrap_candidate "$github_url" "$target" 10 90 3; then
+      BOOTSTRAP_SOURCE="github"
+    else
+      warn "OpenAI GitHub Release 也未快速完成，最后重试 OpenAI CDN。"
+      download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 3 ||
+        die "OpenAI CDN 与 OpenAI GitHub Release 均无法下载 bootstrap；请检查代理、DNS 或企业 CA。"
+      BOOTSTRAP_SOURCE="releases"
+    fi
+  fi
+
   chmod 600 "$target" || die "无法设置 bootstrap 私有权限。"
   validate_bootstrap "$target"
+  info "bootstrap 来源：$(if [ "$BOOTSTRAP_SOURCE" = "github" ]; then printf 'OpenAI GitHub Release'; elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then printf 'OpenAI CDN'; else printf '组织自定义入口'; fi)"
 }
 
 linux_git_command() {
@@ -626,12 +702,20 @@ npm_command() {
 
 install_standalone() {
   local args=()
+  local installer_env=()
   args+=(--release "$RELEASE")
 
   [ -f "$WORK_DIR/install.sh" ] || download_bootstrap
   step "执行官方 standalone 安装器"
+  if [ "$BOOTSTRAP_SOURCE" = "github" ]; then
+    installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false")
+    info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+  fi
   if [ "$NON_INTERACTIVE" = "1" ]; then
-    env CODEX_NON_INTERACTIVE=1 /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
+    installer_env+=("CODEX_NON_INTERACTIVE=1")
+  fi
+  if [ "${#installer_env[@]}" -gt 0 ]; then
+    env "${installer_env[@]}" /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
   else
     /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
   fi
