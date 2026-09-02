@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+目标版本：`2.1.0`。
+
 ### Added
 
 - 新增跨平台 `auto` 网络判断；OpenAI CDN 快速失败时自动切换 OpenAI 官方 GitHub Release，并避免后续重复等待不可用通道。

@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "2.0.1"
+EXPECTED_VERSION = "2.1.0"
 CHECKOUT_V7_0_1 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 ATTEST_V4_2_2 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ACTIONLINT_V1_7_12 = "914e7df21a07ef503a81201c76d2b11c789d3fca"
