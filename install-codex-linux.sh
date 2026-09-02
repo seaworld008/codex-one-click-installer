@@ -9,4 +9,4 @@ if [ ! -f "$CORE_SCRIPT" ]; then
   exit 1
 fi
 
-exec /bin/bash "$CORE_SCRIPT" "$@"
+exec /bin/bash "$CORE_SCRIPT" --install-app "$@"

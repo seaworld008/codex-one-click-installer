@@ -15,6 +15,8 @@ BOOTSTRAP_URL="${CODEX_BOOTSTRAP_URL:-$OFFICIAL_BOOTSTRAP_URL}"
 GITHUB_BOOTSTRAP_LATEST_URL="https://github.com/openai/codex/releases/latest/download/install.sh"
 BOOTSTRAP_MIN_BYTES=1024
 BOOTSTRAP_MAX_BYTES=1048576
+LINUX_APP_MAX_BYTES=838860800
+LINUX_APP_MIN_BYTES=10485760
 
 UPDATE=0
 METHOD="standalone"
@@ -31,6 +33,10 @@ OS_FAMILY=""
 OS_NAME=""
 OS_VERSION=""
 ARCH=""
+LINUX_ID=""
+LINUX_VERSION_ID=""
+LINUX_APP_FORMAT=""
+LINUX_APP_REASON=""
 WORK_DIR=""
 LOG_FILE=""
 CODEX_BIN=""
@@ -51,6 +57,7 @@ usage() {
   --verify-downloads          实际下载并检查官方 standalone bootstrap
   --non-interactive           禁用官方安装器的交互提示
   --install-app               CLI 成功后调用当前 codex app 官方流程
+  --skip-app                  跳过桌面应用（Linux 薄入口默认会请求安装）
   --require-app               要求 app 流程成功；同时启用 --install-app
   --install-dev-tools         检查 Git；macOS 启动 CLT，Linux 给出系统包命令
   --help, -h                  显示帮助
@@ -151,6 +158,10 @@ parse_args() {
         ;;
       --install-app)
         INSTALL_APP=1
+        ;;
+      --skip-app)
+        INSTALL_APP=0
+        REQUIRE_APP=0
         ;;
       --require-app)
         REQUIRE_APP=1
@@ -287,7 +298,9 @@ validate_options() {
   fi
 
   if { [ -n "${CODEX_TEST_UNAME_S:-}" ] || [ -n "${CODEX_TEST_OS:-}" ] ||
-    [ -n "${CODEX_TEST_ARCH:-}" ] || [ -n "${CODEX_TEST_OS_VERSION:-}" ]; } &&
+    [ -n "${CODEX_TEST_ARCH:-}" ] || [ -n "${CODEX_TEST_OS_VERSION:-}" ] ||
+    [ -n "${CODEX_TEST_LINUX_ID:-}" ] ||
+    [ -n "${CODEX_TEST_LINUX_VERSION_ID:-}" ]; } &&
     [ "$CHECK_ONLY" != "1" ]; then
     die "CODEX_TEST_* 仅允许与 --check-only 一起使用。"
   fi
@@ -355,6 +368,40 @@ detect_platform() {
   fi
 }
 
+read_os_release_value() {
+  local key="$1"
+  local value=""
+  [ -r /etc/os-release ] || return 0
+  value="$(sed -n "s/^${key}=//p" /etc/os-release | sed -n '1p')"
+  case "$value" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+detect_linux_app_support() {
+  [ "$OS_FAMILY" = "linux" ] || return 0
+
+  LINUX_ID="${CODEX_TEST_LINUX_ID:-$(read_os_release_value ID)}"
+  LINUX_VERSION_ID="${CODEX_TEST_LINUX_VERSION_ID:-$(read_os_release_value VERSION_ID)}"
+  LINUX_ID="$(printf '%s' "$LINUX_ID" | LC_ALL=C tr 'A-Z' 'a-z')"
+
+  case "$LINUX_ID:$LINUX_VERSION_ID" in
+    ubuntu:24.04|ubuntu:26.04|debian:13)
+      LINUX_APP_FORMAT="deb"
+      ;;
+    fedora:43|fedora:44)
+      LINUX_APP_FORMAT="rpm"
+      ;;
+    *)
+      LINUX_APP_REASON="官方 Linux 桌面预览暂仅支持 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44；当前为 ${LINUX_ID:-未知} ${LINUX_VERSION_ID:-未知}。"
+      ;;
+  esac
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "缺少必需命令：$1"
 }
@@ -404,6 +451,7 @@ check_prerequisites() {
     require_command chmod
     require_command tee
   fi
+
 }
 
 show_plan() {
@@ -430,7 +478,13 @@ show_plan() {
     info "bootstrap 将先下载到 0700 随机临时目录，检查后再执行（不会 pipe-to-sh）。"
   fi
   if [ "$INSTALL_APP" = "1" ]; then
-    info "桌面端：CLI 成功后调用当前 codex app 官方流程"
+    if [ "$OS_FAMILY" = "linux" ] && [ -n "$LINUX_APP_FORMAT" ]; then
+      info "桌面端：官方 Linux ${LINUX_APP_FORMAT} 包（${LINUX_ID} ${LINUX_VERSION_ID}）"
+    elif [ "$OS_FAMILY" = "linux" ]; then
+      info "桌面端：将跳过；$LINUX_APP_REASON"
+    else
+      info "桌面端：CLI 成功后调用当前 codex app 官方流程"
+    fi
   else
     info "桌面端：不安装"
   fi
@@ -823,6 +877,24 @@ verify_codex() {
 install_app() {
   [ "$INSTALL_APP" = "1" ] || return 0
 
+  if [ "$OS_FAMILY" = "linux" ]; then
+    if [ -z "$LINUX_APP_FORMAT" ]; then
+      if [ "$REQUIRE_APP" = "1" ]; then
+        die "$LINUX_APP_REASON"
+      fi
+      warn "PARTIAL：$LINUX_APP_REASON CLI 已安装并验证。"
+      return
+    fi
+    if (install_linux_app); then
+      return
+    fi
+    if [ "$REQUIRE_APP" = "1" ]; then
+      die "CLI 已安装，但必需的 ChatGPT Linux 桌面应用安装失败。"
+    fi
+    warn "PARTIAL：Codex CLI 已安装并验证，但 ChatGPT Linux 桌面应用未完成。"
+    return
+  fi
+
   step "Codex 桌面端官方流程"
   if "$CODEX_BIN" app; then
     info "codex app 官方流程已成功启动/完成。"
@@ -835,10 +907,125 @@ install_app() {
   warn "PARTIAL：Codex CLI 已安装并验证，但 codex app 官方流程失败。"
 }
 
+linux_app_url() {
+  if [ "$LINUX_APP_FORMAT" = "deb" ] && [ "$ARCH" = "x64" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb\n'
+  elif [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb\n'
+  elif [ "$ARCH" = "x64" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm\n'
+  else
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.aarch64.rpm\n'
+  fi
+}
+
+download_linux_app() {
+  local url="$1"
+  local target="$2"
+  local part="$target.part"
+  local bytes
+
+  step "下载 OpenAI 官方 ChatGPT Linux 桌面应用"
+  if ! curl \
+      --disable \
+      --proto '=https' \
+      --proto-redir '=https' \
+      --fail \
+      --silent \
+      --show-error \
+      --location \
+      --retry 3 \
+      --retry-all-errors \
+      --connect-timeout 15 \
+      --max-time 1800 \
+      "$url" |
+    head -c "$((LINUX_APP_MAX_BYTES + 1))" >"$part"; then
+    rm -f "$part"
+    return 1
+  fi
+  bytes="$(wc -c <"$part" | tr -d '[:space:]')"
+  if [ "$bytes" -lt "$LINUX_APP_MIN_BYTES" ] ||
+    [ "$bytes" -gt "$LINUX_APP_MAX_BYTES" ]; then
+    rm -f "$part"
+    die "ChatGPT Linux 包大小异常：$bytes 字节。"
+  fi
+  mv "$part" "$target" || die "无法保存 ChatGPT Linux 包。"
+  chmod 600 "$target" || die "无法设置 ChatGPT Linux 包私有权限。"
+  info "官方桌面包下载完成：$bytes 字节。"
+}
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif [ "$NON_INTERACTIVE" = "1" ]; then
+    sudo -n "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+validate_linux_app_package() {
+  local target="$1"
+  local name package_arch expected_arch
+
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    name="$(dpkg-deb -f "$target" Package)"
+    package_arch="$(dpkg-deb -f "$target" Architecture)"
+    expected_arch="$(if [ "$ARCH" = "x64" ]; then printf 'amd64'; else printf 'arm64'; fi)"
+  else
+    name="$(rpm -qp --queryformat '%{NAME}' "$target")"
+    package_arch="$(rpm -qp --queryformat '%{ARCH}' "$target")"
+    expected_arch="$(if [ "$ARCH" = "x64" ]; then printf 'x86_64'; else printf 'aarch64'; fi)"
+  fi
+
+  [ "$name" = "chatgpt" ] || die "桌面包名称不匹配：$name"
+  [ "$package_arch" = "$expected_arch" ] ||
+    die "桌面包架构不匹配：期望 $expected_arch，实际 $package_arch"
+  info "桌面包元数据校验通过：chatgpt / $package_arch。"
+}
+
+install_linux_app() {
+  local url target
+
+  step "ChatGPT Linux 桌面应用"
+  require_command curl
+  require_command id
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    require_command dpkg-deb
+    require_command apt
+  else
+    require_command rpm
+    require_command dnf
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    require_command sudo
+  fi
+
+  ensure_work_dir
+  url="$(linux_app_url)"
+  target="$WORK_DIR/chatgpt.$LINUX_APP_FORMAT"
+  download_linux_app "$url" "$target" ||
+    die "无法从 OpenAI 官方 CDN 下载 ChatGPT Linux 桌面包。"
+  validate_linux_app_package "$target"
+
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    run_privileged apt install -y "$target"
+    dpkg-query -W -f='${Status}\n' chatgpt 2>/dev/null |
+      grep -q '^install ok installed$' ||
+      die "apt 结束后未确认 chatgpt 已安装。"
+  else
+    run_privileged dnf install -y "$target"
+    rpm -q chatgpt >/dev/null 2>&1 ||
+      die "dnf 结束后未确认 chatgpt 已安装。"
+  fi
+  info "ChatGPT Linux 桌面应用已安装；后续更新由其配置的 OpenAI 软件源提供。"
+}
+
 main() {
   parse_args "$@"
   validate_options
   detect_platform
+  detect_linux_app_support
   check_prerequisites
   show_plan
   handle_dev_tools

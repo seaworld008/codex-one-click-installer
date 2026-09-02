@@ -213,6 +213,8 @@ class RepositoryContractTests(unittest.TestCase):
             "https://releases.openai.com/codex/install.ps1",
             "https://releases.openai.com/codex/channels/latest",
             "https://get.microsoft.com/installer/download/9PLM9XGG6VKS",
+            "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb",
+            "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm",
             "9PLM9XGG6VKS",
         ]
         for value in required:
@@ -579,6 +581,25 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("maximum=1024 * 1024 * 1024", source)
         self.assertIn("unsafe total size", source)
 
+    def test_upstream_linux_probes_use_official_docs_and_bounded_packages(
+        self,
+    ) -> None:
+        source = read("scripts/check-upstreams.py")
+        self.assertIn(
+            'LINUX_DOCS = "https://learn.chatgpt.com/docs/linux/linux-app"',
+            source,
+        )
+        for filename in (
+            "chatgpt_amd64.deb",
+            "chatgpt_arm64.deb",
+            "chatgpt.x86_64.rpm",
+            "chatgpt.aarch64.rpm",
+        ):
+            self.assertIn(filename, source)
+        self.assertIn('headers={"Range": "bytes=0-7"', source)
+        self.assertIn("minimum=10 * 1024 * 1024", source)
+        self.assertIn("maximum=800 * 1024 * 1024", source)
+
     def test_windows_downloads_are_bounded_and_msix_identity_is_verified(
         self,
     ) -> None:
@@ -742,6 +763,30 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertIn("bootstrap 下载与内容校验通过", retry_result.stdout)
             self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
 
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "dd if=/dev/zero bs=1048576 count=2 2>/dev/null\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            oversize_result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install-codex-unix.sh"),
+                    "--check-only",
+                    "--verify-downloads",
+                    "--non-interactive",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(oversize_result.returncode, 0)
+            self.assertIn("超过安全上限", oversize_result.stderr)
+            self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
+
     def test_unix_auto_network_falls_back_to_official_github_release(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -807,29 +852,47 @@ class RepositoryContractTests(unittest.TestCase):
                 call_log,
             )
 
-            fake_curl.write_text(
-                "#!/bin/sh\n"
-                "dd if=/dev/zero bs=1048576 count=2 2>/dev/null\n",
-                encoding="utf-8",
-            )
-            fake_curl.chmod(0o755)
-            oversize_result = subprocess.run(
-                [
-                    "bash",
-                    str(ROOT / "install-codex-unix.sh"),
-                    "--check-only",
-                    "--verify-downloads",
-                    "--non-interactive",
-                ],
-                cwd=ROOT,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(oversize_result.returncode, 0)
-            self.assertIn("超过安全上限", oversize_result.stderr)
-            self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
+    def test_linux_wrapper_defaults_to_official_desktop_app(self) -> None:
+        wrapper = read("install-codex-linux.sh")
+        self.assertIn(
+            'exec /bin/bash "$CORE_SCRIPT" --install-app "$@"',
+            wrapper,
+        )
+        unix = read("install-codex-unix.sh")
+        for contract in (
+            "ubuntu:24.04|ubuntu:26.04|debian:13",
+            "fedora:43|fedora:44",
+            "dpkg-deb -f",
+            "rpm -qp --queryformat",
+            'name" = "chatgpt',
+            "LINUX_APP_MAX_BYTES=838860800",
+            "--skip-app",
+        ):
+            self.assertIn(contract, unix)
+
+        environment = {
+            **os.environ,
+            "CODEX_TEST_UNAME_S": "Linux",
+            "CODEX_TEST_ARCH": "aarch64",
+            "CODEX_TEST_OS_VERSION": "Ubuntu 24.04 LTS",
+            "CODEX_TEST_LINUX_ID": "ubuntu",
+            "CODEX_TEST_LINUX_VERSION_ID": "24.04",
+        }
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "install-codex-linux.sh"),
+                "--check-only",
+                "--non-interactive",
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("官方 Linux deb 包（ubuntu 24.04）", result.stdout)
 
     def test_enterprise_ca_documentation_matches_bootstrap_trust_boundaries(
         self,
