@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "2.0.1"
+EXPECTED_VERSION = "2.1.0"
 CHECKOUT_V7_0_1 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 ATTEST_V4_2_2 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ACTIONLINT_V1_7_12 = "914e7df21a07ef503a81201c76d2b11c789d3fca"
@@ -30,6 +30,7 @@ EXPECTED_RELEASE_FILES = [
     "VERSION",
     "Windows双击安装Codex.cmd",
     "Windows双击更新Codex.cmd",
+    "docs/configuration.md",
     "docs/migration-v2.md",
     "docs/troubleshooting.md",
     "install-codex-linux.sh",
@@ -213,6 +214,8 @@ class RepositoryContractTests(unittest.TestCase):
             "https://releases.openai.com/codex/install.ps1",
             "https://releases.openai.com/codex/channels/latest",
             "https://get.microsoft.com/installer/download/9PLM9XGG6VKS",
+            "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb",
+            "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm",
             "9PLM9XGG6VKS",
         ]
         for value in required:
@@ -579,6 +582,27 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("maximum=1024 * 1024 * 1024", source)
         self.assertIn("unsafe total size", source)
 
+    def test_upstream_linux_probes_use_official_docs_and_bounded_packages(
+        self,
+    ) -> None:
+        source = read("scripts/check-upstreams.py")
+        self.assertIn(
+            'LINUX_DOCS = "https://learn.chatgpt.com/docs/linux/linux-app"',
+            source,
+        )
+        for filename in (
+            "chatgpt_amd64.deb",
+            "chatgpt_arm64.deb",
+            "chatgpt.x86_64.rpm",
+            "chatgpt.aarch64.rpm",
+        ):
+            self.assertIn(filename, source)
+        self.assertIn('headers={"Range": "bytes=0-7"', source)
+        self.assertIn("minimum=10 * 1024 * 1024", source)
+        self.assertIn("maximum=800 * 1024 * 1024", source)
+        self.assertIn('expected = b"!<arch>\\n"', source)
+        self.assertIn('expected = b"\\xed\\xab\\xee\\xdb"', source)
+
     def test_windows_downloads_are_bounded_and_msix_identity_is_verified(
         self,
     ) -> None:
@@ -587,9 +611,14 @@ class RepositoryContractTests(unittest.TestCase):
             "[Parameter(Mandatory=$true)][long]$MaximumBytes",
             "$response.ContentLength -gt $MaximumBytes",
             "$totalBytes + [long]$bytesRead -gt $MaximumBytes",
+            "[System.Diagnostics.Stopwatch]::StartNew()",
+            "$downloadTimer.ElapsedMilliseconds",
+            "$asyncRead.AsyncWaitHandle.WaitOne([int]$remainingMilliseconds)",
+            "$request.Abort()",
             "-MaximumBytes 2097152",
             "-MinimumBytes 1048576",
             "-MaximumBytes 1073741824",
+            "-TimeoutMilliseconds 3600000",
             '$expectedName = "OpenAI.Codex"',
             '$expectedPublisher = "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B"',
             "AppxManifest.xml",
@@ -602,10 +631,36 @@ class RepositoryContractTests(unittest.TestCase):
             "CODEX_INSTALL_DIR 不得解析为驱动器根或 UNC 共享根",
             "$script:ValidatedCodexInstallDir",
             "(?![0-9A-Za-z.+-])",
+            "https://github.com/openai/codex/releases/latest/download/install.ps1",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+            "OpenAI CDN 快速探测未通过",
+            '[ValidateSet("auto", "official", "github")]',
+            "function Download-AndValidateOfficialBootstrap",
+            "function Download-OfficialBootstrap",
+            '"true",',
         ):
             self.assertIn(contract, windows)
+        helper = windows.split(
+            "function Download-AndValidateOfficialBootstrap", maxsplit=1
+        )[1].split("function Download-OfficialBootstrap", maxsplit=1)[0]
+        self.assertLess(
+            helper.index("Download-File"),
+            helper.index("Test-OfficialBootstrap"),
+        )
+        self.assertIn(
+            "Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue",
+            helper,
+        )
         self.assertNotIn('Arguments @("--registry"', windows)
         self.assertIn('"npm_config_registry", $NpmRegistry.Trim()', windows)
+        standalone = windows.split(
+            "function Invoke-StandaloneInstall", maxsplit=1
+        )[1].split("function Get-NpmRelease", maxsplit=1)[0]
+        self.assertIn('$script:BootstrapSource -eq "releases"', standalone)
+        self.assertIn(
+            '"CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",\n                "true"',
+            standalone,
+        )
 
     def test_test_overrides_are_strictly_check_only(self) -> None:
         windows = read("install-codex.ps1")
@@ -660,8 +715,19 @@ class RepositoryContractTests(unittest.TestCase):
             'target="$WORK_DIR/install.sh"',
             'mv "$part" "$target"',
             '/bin/sh "$WORK_DIR/install.sh"',
+            "https://github.com/openai/codex/releases/latest/download/install.sh",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=true",
+            "--network 仅支持 auto、official 或 github",
         ):
             self.assertIn(contract, unix)
+        standalone = unix.split("install_standalone() {", maxsplit=1)[1].split(
+            "install_brew() {", maxsplit=1
+        )[0]
+        self.assertIn(
+            'elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then',
+            standalone,
+        )
         self.assertIn("[^0-9A-Za-z.+-]", unix)
         for wrapper_path in (
             "install-codex-linux.sh",
@@ -757,6 +823,243 @@ class RepositoryContractTests(unittest.TestCase):
             self.assertNotEqual(oversize_result.returncode, 0)
             self.assertIn("超过安全上限", oversize_result.stderr)
             self.assertEqual(list(temp_root.glob("codex-installer.*")), [])
+
+    def test_unix_auto_network_rejects_invalid_cdn_payload_and_falls_back(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            fake_bin = base / "bin"
+            temp_root = base / "tmp"
+            fake_bin.mkdir()
+            temp_root.mkdir()
+            fake_curl = fake_bin / "curl"
+            valid_bootstrap = base / "valid-install.sh"
+            valid_bootstrap.write_text(
+                "#!/bin/sh\n"
+                "# Codex CLI official-compatible test fixture\n"
+                "CODEX_RELEASE=latest\n"
+                "# supports --release\n"
+                + ("# bounded fixture padding\n" * 64),
+                encoding="utf-8",
+            )
+            calls = base / "calls"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                'for argument in "$@"; do url="$argument"; done\n'
+                'printf "%s\\n" "$url" >>"$FAKE_CURL_CALLS"\n'
+                'case "$url" in\n'
+                "  https://releases.openai.com/*) "
+                "printf '<!doctype html>\\n'; "
+                "dd if=/dev/zero bs=4096 count=2 2>/dev/null ;;\n"
+                "  https://github.com/openai/codex/releases/*) "
+                'exec /bin/cat "$FAKE_BOOTSTRAP" ;;\n'
+                "  *) exit 22 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                "TMPDIR": str(temp_root),
+                "FAKE_CURL_CALLS": str(calls),
+                "FAKE_BOOTSTRAP": str(valid_bootstrap),
+                "CODEX_TEST_UNAME_S": "Linux",
+                "CODEX_TEST_ARCH": "x86_64",
+                "CODEX_TEST_OS_VERSION": "Test Linux",
+            }
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install-codex-unix.sh"),
+                    "--check-only",
+                    "--verify-downloads",
+                    "--non-interactive",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("未通过校验", result.stderr)
+            self.assertIn("自动切换 OpenAI GitHub Release", result.stdout)
+            self.assertIn("bootstrap 来源：OpenAI GitHub Release", result.stdout)
+            call_log = calls.read_text(encoding="utf-8")
+            self.assertIn("https://releases.openai.com/codex/install.sh", call_log)
+            self.assertIn(
+                "https://github.com/openai/codex/releases/latest/download/install.sh",
+                call_log,
+            )
+
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                'for argument in "$@"; do url="$argument"; done\n'
+                'case "$url" in\n'
+                "  https://releases.openai.com/*) "
+                "dd if=/dev/zero bs=1048576 count=2 2>/dev/null ;;\n"
+                "  https://github.com/openai/codex/releases/*) "
+                'exec /bin/cat "$FAKE_BOOTSTRAP" ;;\n'
+                "  *) exit 22 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            oversize_fallback = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "install-codex-unix.sh"),
+                    "--check-only",
+                    "--verify-downloads",
+                    "--non-interactive",
+                ],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                oversize_fallback.returncode,
+                0,
+                oversize_fallback.stderr,
+            )
+            self.assertIn("超过安全上限", oversize_fallback.stderr)
+            self.assertIn(
+                "bootstrap 来源：OpenAI GitHub Release",
+                oversize_fallback.stdout,
+            )
+
+    def test_linux_app_retry_discards_partial_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            fake_bin = base / "bin"
+            work_dir = base / "work"
+            target = work_dir / "chatgpt.deb"
+            state = base / "curl-state"
+            fake_bin.mkdir()
+            work_dir.mkdir()
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "count=0\n"
+                '[ ! -f "$FAKE_CURL_STATE" ] || '
+                'count="$(/bin/cat "$FAKE_CURL_STATE")"\n'
+                "count=$((count + 1))\n"
+                'printf "%s" "$count" >"$FAKE_CURL_STATE"\n'
+                'if [ "$count" -eq 1 ]; then\n'
+                "  printf 'partial-first-response'\n"
+                "  exit 56\n"
+                "fi\n"
+                "printf 'clean-second-response'\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+
+            unix = read("install-codex-unix.sh")
+            definitions = unix.rsplit('\nmain "$@"', maxsplit=1)[0]
+            harness = base / "download-linux-app.sh"
+            harness.write_text(
+                definitions
+                + "\nLINUX_APP_MIN_BYTES=5\n"
+                + "LINUX_APP_MAX_BYTES=64\n"
+                + 'WORK_DIR="$FAKE_WORK_DIR"\n'
+                + "trap - EXIT\n"
+                + 'download_linux_app "https://example.invalid/chatgpt.deb" '
+                + '"$FAKE_TARGET"\n',
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["bash", str(harness)],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "FAKE_CURL_STATE": str(state),
+                    "FAKE_WORK_DIR": str(work_dir),
+                    "FAKE_TARGET": str(target),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "2")
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "clean-second-response",
+            )
+            self.assertEqual(list(work_dir.glob("*.part.*")), [])
+
+    def test_linux_wrapper_defaults_to_official_desktop_app(self) -> None:
+        wrapper = read("install-codex-linux.sh")
+        self.assertIn(
+            'exec /bin/bash "$CORE_SCRIPT" --install-app "$@"',
+            wrapper,
+        )
+        unix = read("install-codex-unix.sh")
+        for contract in (
+            "ubuntu:24.04|ubuntu:26.04|debian:13",
+            "fedora:43|fedora:44",
+            "dpkg-deb -f",
+            "rpm -qp --queryformat",
+            'name" = "chatgpt',
+            "LINUX_APP_MAX_BYTES=838860800",
+            'part="$target.part.$attempt"',
+            "--skip-app",
+            "(trap - EXIT; install_linux_app)",
+            "if ! run_privileged apt install -y",
+            "if ! run_privileged dnf install -y",
+            "apt 安装 ChatGPT Linux 桌面包失败",
+            "dnf 安装 ChatGPT Linux 桌面包失败",
+        ):
+            self.assertIn(contract, unix)
+        self.assertNotIn("--retry-all-errors", unix)
+
+        environment = {
+            **os.environ,
+            "CODEX_TEST_UNAME_S": "Linux",
+            "CODEX_TEST_ARCH": "aarch64",
+            "CODEX_TEST_OS_VERSION": "Ubuntu 24.04 LTS",
+            "CODEX_TEST_LINUX_ID": "ubuntu",
+            "CODEX_TEST_LINUX_VERSION_ID": "24.04",
+        }
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "install-codex-linux.sh"),
+                "--check-only",
+                "--non-interactive",
+            ],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("官方 Linux deb 包（ubuntu 24.04）", result.stdout)
+
+    def test_installers_print_post_install_configuration_reference(self) -> None:
+        unix = read("install-codex-unix.sh")
+        windows = read("install-codex.ps1")
+        docs = read("docs/configuration.md")
+        self.assertIn("~/.codex/config.toml", unix)
+        self.assertIn(r"$HOME\.codex\config.toml", windows)
+        self.assertIn("~/.codex/config.toml", docs)
+        for content in (unix, windows, docs):
+            self.assertIn('model = "gpt-5.6"', content)
+            self.assertIn('approval_policy = "on-request"', content)
+            self.assertIn('sandbox_mode = "workspace-write"', content)
+            self.assertIn("codex --strict-config --version", content)
+        self.assertIn("show_post_install_guide", unix)
+        self.assertIn("Show-PostInstallGuide", windows)
+        self.assertIn("docs/configuration.md", unix)
+        self.assertIn("docs/configuration.md", windows)
 
     def test_enterprise_ca_documentation_matches_bootstrap_trust_boundaries(
         self,
@@ -893,6 +1196,24 @@ class UpstreamProbeTests(unittest.TestCase):
             with self.subTest(value=invalid):
                 with self.assertRaises(self.probes.ProbeError):
                     self.probes.validate_sha512_integrity(invalid)
+
+    def test_linux_package_prefix_requires_deb_or_rpm_magic(self) -> None:
+        self.probes.validate_linux_package_prefix(
+            "chatgpt_amd64.deb",
+            b"!<arch>\nrest",
+        )
+        self.probes.validate_linux_package_prefix(
+            "chatgpt.x86_64.rpm",
+            b"\xed\xab\xee\xdbrest",
+        )
+        for filename, body in (
+            ("chatgpt_amd64.deb", b"<html>"),
+            ("chatgpt.x86_64.rpm", b"PK\x03\x04"),
+            ("chatgpt.bin", b"!<arch>\n"),
+        ):
+            with self.subTest(filename=filename):
+                with self.assertRaises(self.probes.ProbeError):
+                    self.probes.validate_linux_package_prefix(filename, body)
 
 
 class ReleaseAssetVerificationTests(unittest.TestCase):

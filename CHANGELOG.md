@@ -4,7 +4,18 @@
 
 ## [Unreleased]
 
-暂无。
+目标版本：`2.1.0`。
+
+### Added
+
+- 新增跨平台 `auto` 网络判断；OpenAI CDN 快速失败时自动切换 OpenAI 官方 GitHub Release，并避免后续重复等待不可用通道。
+- Linux 官方桌面应用安装，覆盖 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44 的 x64/Arm64 包。
+- 安装结束输出配置修改步骤，并新增个人/项目配置、备份、验证和回滚案例。
+
+### Changed
+
+- Linux 薄入口默认同时请求安装 ChatGPT 桌面应用，可用 `--skip-app` 明确跳过。
+- Upstream smoke 增加 Linux 官方文档与四个桌面包的有界探测。
 
 ## [2.0.1] - 2026-08-25
 

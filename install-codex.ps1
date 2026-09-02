@@ -7,6 +7,8 @@ param(
     [switch]$Update,
     [ValidateSet("standalone", "npm")]
     [string]$CliMethod = "standalone",
+    [ValidateSet("auto", "official", "github")]
+    [string]$NetworkMode = "auto",
     [string]$Release = "latest",
     [switch]$InstallDesktopApp,
     [switch]$RequireDesktopApp,
@@ -30,6 +32,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $OfficialBootstrapUrl = "https://releases.openai.com/codex/install.ps1"
 $OfficialLatestChannelUrl = "https://releases.openai.com/codex/channels/latest"
+$GithubBootstrapLatestUrl = "https://github.com/openai/codex/releases/latest/download/install.ps1"
 $DesktopStoreId = "9PLM9XGG6VKS"
 $DesktopMsixX64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix"
 $DesktopMsixArm64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix"
@@ -42,6 +45,7 @@ $script:BootstrapPath = $null
 $script:DesktopMsixPath = $null
 $script:NpmExecutable = $null
 $script:ValidatedCodexInstallDir = $null
+$script:BootstrapSource = $null
 
 try {
     [Console]::OutputEncoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
@@ -406,9 +410,16 @@ function Show-Plan {
     Write-Line "架构：$Architecture" White
     Write-Line "操作：Codex CLI $ActionName" White
     Write-Line "CLI 安装方式：$CliMethod" White
+    Write-Line "网络模式：$NetworkMode" White
     Write-Line "CLI 版本：$($Release.Trim())" White
     if ($CliMethod -eq "standalone") {
-        Write-Line "官方 bootstrap：$(Get-SafeUrl $OfficialBootstrapUrl)" White
+        if ($NetworkMode -eq "auto") {
+            Write-Line "官方 bootstrap：优先 OpenAI CDN；短时不可用时自动切换 OpenAI GitHub Release" White
+        } elseif ($NetworkMode -eq "github") {
+            Write-Line "官方 bootstrap：OpenAI GitHub Release" White
+        } else {
+            Write-Line "官方 bootstrap：$(Get-SafeUrl $OfficialBootstrapUrl)" White
+        }
         Write-Line "官方发布通道：$(Get-SafeUrl $OfficialLatestChannelUrl)" DarkGray
     } elseif (-not [string]::IsNullOrWhiteSpace($NpmRegistry)) {
         Write-Line "npm registry（仅本次 npm 子进程环境，不写 .npmrc）：$(Get-SafeUrl $NpmRegistry)" White
@@ -493,7 +504,8 @@ function Download-File {
         [Parameter(Mandatory=$true)][string]$Url,
         [Parameter(Mandatory=$true)][string]$OutFile,
         [long]$MinimumBytes = 1,
-        [Parameter(Mandatory=$true)][long]$MaximumBytes
+        [Parameter(Mandatory=$true)][long]$MaximumBytes,
+        [int]$TimeoutMilliseconds = 300000
     )
 
     Write-Step "下载 $Name"
@@ -518,6 +530,7 @@ function Download-File {
     $outputStream = $null
     $downloadError = $null
     [long]$totalBytes = 0
+    $downloadTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
         # HttpWebRequest 在 Windows PowerShell 5.1 可用，并沿用 Windows 的系统代理、
@@ -526,8 +539,8 @@ function Download-File {
         $request.Method = "GET"
         $request.AllowAutoRedirect = $true
         $request.MaximumAutomaticRedirections = 10
-        $request.Timeout = 300000
-        $request.ReadWriteTimeout = 300000
+        $request.Timeout = $TimeoutMilliseconds
+        $request.ReadWriteTimeout = $TimeoutMilliseconds
         $request.UserAgent = "codex-one-click-installer/2.0"
         $request.AutomaticDecompression = (
             [System.Net.DecompressionMethods]::GZip -bor
@@ -559,7 +572,32 @@ function Download-File {
             [System.IO.FileShare]::None
         )
         $buffer = New-Object byte[] 65536
-        while (($bytesRead = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while ($true) {
+            [long]$remainingMilliseconds = (
+                [long]$TimeoutMilliseconds - $downloadTimer.ElapsedMilliseconds
+            )
+            if ($remainingMilliseconds -le 0) {
+                $request.Abort()
+                throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+            }
+
+            # 用整个下载的剩余预算等待异步读取，避免代理持续滴流时每次 Read
+            # 都在单次 ReadWriteTimeout 内完成，却让快速探测无限延长。
+            $asyncRead = $inputStream.BeginRead($buffer, 0, $buffer.Length, $null, $null)
+            try {
+                if (-not $asyncRead.AsyncWaitHandle.WaitOne([int]$remainingMilliseconds)) {
+                    $request.Abort()
+                    throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+                }
+                $bytesRead = $inputStream.EndRead($asyncRead)
+            } finally {
+                $asyncRead.AsyncWaitHandle.Close()
+            }
+            if ($downloadTimer.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                $request.Abort()
+                throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+            }
+            if ($bytesRead -le 0) { break }
             if ($totalBytes + [long]$bytesRead -gt $MaximumBytes) {
                 throw "$Name 实际大小超过上限 $MaximumBytes 字节。"
             }
@@ -573,6 +611,7 @@ function Download-File {
         if ($null -ne $outputStream) { $outputStream.Dispose() }
         if ($null -ne $inputStream) { $inputStream.Dispose() }
         if ($null -ne $response) { $response.Dispose() }
+        $downloadTimer.Stop()
     }
 
     if ($null -ne $downloadError) {
@@ -589,6 +628,67 @@ function Download-File {
         throw "$Name 下载大小超出允许范围（实际 $length 字节；允许 $MinimumBytes..$MaximumBytes 字节）。"
     }
     Write-Success "$Name 下载完成（$length 字节）。"
+}
+
+function Get-GithubBootstrapUrl {
+    # bootstrap 始终取最新官方 installer；CLI 目标版本仍由 -Release 独立控制。
+    return $GithubBootstrapLatestUrl
+}
+
+function Download-AndValidateOfficialBootstrap {
+    param(
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$OutFile,
+        [int]$TimeoutMilliseconds = 300000
+    )
+
+    try {
+        Download-File `
+            -Name "OpenAI 官方 Codex bootstrap" `
+            -Url $Url `
+            -OutFile $OutFile `
+            -MinimumBytes 4096 `
+            -MaximumBytes 2097152 `
+            -TimeoutMilliseconds $TimeoutMilliseconds
+        $null = Test-OfficialBootstrap -Path $OutFile -ExpectedSha256 $BootstrapSha256
+    } catch {
+        Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Download-OfficialBootstrap {
+    param([Parameter(Mandatory=$true)][string]$OutFile)
+
+    if ($NetworkMode -eq "official") {
+        Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile
+        $script:BootstrapSource = "releases"
+        return
+    }
+    if ($NetworkMode -eq "github") {
+        Download-AndValidateOfficialBootstrap -Url (Get-GithubBootstrapUrl) -OutFile $OutFile -TimeoutMilliseconds 180000
+        $script:BootstrapSource = "github"
+        return
+    }
+
+    try {
+        Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile -TimeoutMilliseconds 15000
+        $script:BootstrapSource = "releases"
+        return
+    } catch {
+        Write-Warn "OpenAI CDN 快速探测未通过，自动切换 OpenAI GitHub Release，避免等待长超时：$(Protect-LogText $_.Exception.Message)"
+    }
+
+    try {
+        Download-AndValidateOfficialBootstrap -Url (Get-GithubBootstrapUrl) -OutFile $OutFile -TimeoutMilliseconds 120000
+        $script:BootstrapSource = "github"
+        return
+    } catch {
+        Write-Warn "OpenAI GitHub Release 也未快速完成，最后重试 OpenAI CDN：$(Protect-LogText $_.Exception.Message)"
+    }
+
+    Download-AndValidateOfficialBootstrap -Url $OfficialBootstrapUrl -OutFile $OutFile
+    $script:BootstrapSource = "releases"
 }
 
 function Test-OfficialBootstrap {
@@ -765,6 +865,7 @@ function Invoke-StandaloneInstall {
 
     $oldNonInteractive = [Environment]::GetEnvironmentVariable("CODEX_NON_INTERACTIVE", "Process")
     $oldInstallDirectory = [Environment]::GetEnvironmentVariable("CODEX_INSTALL_DIR", "Process")
+    $oldReleasePreference = [Environment]::GetEnvironmentVariable("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", "Process")
     try {
         if ($NonInteractive) {
             [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", "1", "Process")
@@ -776,10 +877,26 @@ function Invoke-StandaloneInstall {
                 "Process"
             )
         }
+        if ($script:BootstrapSource -eq "github") {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+                "false",
+                "Process"
+            )
+            Write-Info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+        } elseif ($script:BootstrapSource -eq "releases") {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+                "true",
+                "Process"
+            )
+            Write-Info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
+        }
         $result = Invoke-NativeCommand -Path $powerShell -Arguments $arguments -DisplayName "官方 install.ps1 -Release $($RequestedRelease.Trim())"
     } finally {
         [Environment]::SetEnvironmentVariable("CODEX_NON_INTERACTIVE", $oldNonInteractive, "Process")
         [Environment]::SetEnvironmentVariable("CODEX_INSTALL_DIR", $oldInstallDirectory, "Process")
+        [Environment]::SetEnvironmentVariable("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", $oldReleasePreference, "Process")
     }
 
     if ($result.ExitCode -ne 0) {
@@ -1077,7 +1194,8 @@ function Install-DesktopAppFromMsix {
         -Url $url `
         -OutFile $script:DesktopMsixPath `
         -MinimumBytes 1048576 `
-        -MaximumBytes 1073741824
+        -MaximumBytes 1073741824 `
+        -TimeoutMilliseconds 3600000
 
     Assert-DesktopMsixIdentity -Path $script:DesktopMsixPath -Architecture $Architecture
 
@@ -1296,6 +1414,29 @@ function Invoke-CodexDoctorAdvisory {
     }
 }
 
+function Show-PostInstallGuide {
+    Write-Step "后续配置参考（安装器不会自动改配置）"
+    Write-Line '个人配置：$HOME\.codex\config.toml' White
+    Write-Line '项目配置：项目目录\.codex\config.toml（仅信任项目后加载）' White
+    Write-Line "" White
+    Write-Line "打开并备份个人配置：" White
+    Write-Line '  New-Item -ItemType Directory -Force "$HOME\.codex" | Out-Null' DarkGray
+    Write-Line '  if (Test-Path "$HOME\.codex\config.toml") { Copy-Item "$HOME\.codex\config.toml" "$HOME\.codex\config.toml.bak" }' DarkGray
+    Write-Line '  notepad "$HOME\.codex\config.toml"' DarkGray
+    Write-Line "" White
+    Write-Line "安全起点示例：" White
+    Write-Line '  model = "gpt-5.6"' DarkGray
+    Write-Line '  model_reasoning_effort = "medium"' DarkGray
+    Write-Line '  approval_policy = "on-request"' DarkGray
+    Write-Line '  sandbox_mode = "workspace-write"' DarkGray
+    Write-Line "" White
+    Write-Line "修改后验证：" White
+    Write-Line "  codex --strict-config --version" DarkGray
+    Write-Line "  codex doctor --summary" DarkGray
+    Write-Line "完整案例：docs/configuration.md" White
+    Write-Line "官方参考：https://learn.chatgpt.com/docs/config-file/config-basic" White
+}
+
 function Remove-DownloadedArtifacts {
     foreach ($path in @($script:BootstrapPath, $script:DesktopMsixPath)) {
         if (-not [string]::IsNullOrWhiteSpace($path)) {
@@ -1358,13 +1499,8 @@ try {
 
     if ($CliMethod -eq "standalone" -or $VerifyDownloads) {
         $script:BootstrapPath = Join-Path $script:WorkDir ("official-bootstrap-" + [guid]::NewGuid().ToString("N") + ".ps1")
-        Download-File `
-            -Name "OpenAI 官方 Codex bootstrap" `
-            -Url $OfficialBootstrapUrl `
-            -OutFile $script:BootstrapPath `
-            -MinimumBytes 4096 `
-            -MaximumBytes 2097152
-        $null = Test-OfficialBootstrap -Path $script:BootstrapPath -ExpectedSha256 $BootstrapSha256
+        Download-OfficialBootstrap -OutFile $script:BootstrapPath
+        Write-Success "bootstrap 来源：$(if ($script:BootstrapSource -eq 'github') { 'OpenAI GitHub Release' } else { 'OpenAI CDN' })"
     }
 
     if ($CheckOnly) {
@@ -1405,6 +1541,7 @@ try {
         }
 
         Invoke-CodexDoctorAdvisory -Codex $codexCommand
+        Show-PostInstallGuide
 
         Write-Line ""
         if ($partialFailures.Count -gt 0) {

@@ -35,6 +35,13 @@ WINDOWS_MSIX = {
     "Windows x64 MSIX": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix",
     "Windows arm64 MSIX": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix",
 }
+LINUX_DOCS = "https://learn.chatgpt.com/docs/linux/linux-app"
+LINUX_PACKAGES = {
+    "Linux deb x64": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb",
+    "Linux deb arm64": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb",
+    "Linux rpm x64": "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm",
+    "Linux rpm arm64": "https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.aarch64.rpm",
+}
 STORE_ID = "9PLM9XGG6VKS"
 REQUIRED_RELEASE_ASSETS = {
     "codex-aarch64-apple-darwin.tar.gz",
@@ -141,6 +148,19 @@ def validate_sha512_integrity(value: object) -> None:
         raise ProbeError("npm latest metadata has malformed SHA-512 integrity") from exc
     if len(digest) != 64:
         raise ProbeError("npm latest metadata SHA-512 integrity is not 64 bytes")
+
+
+def validate_linux_package_prefix(filename: str, body: bytes) -> None:
+    if filename.endswith(".deb"):
+        expected = b"!<arch>\n"
+        package_type = "Debian"
+    elif filename.endswith(".rpm"):
+        expected = b"\xed\xab\xee\xdb"
+        package_type = "RPM"
+    else:
+        raise ProbeError(f"unsupported Linux package filename: {filename}")
+    if not body.startswith(expected):
+        raise ProbeError(f"{filename} did not return a {package_type} package prefix")
 
 
 def check_bootstraps() -> None:
@@ -253,12 +273,42 @@ def check_windows_app() -> None:
     print(f"OK: Windows docs and Store web installer ({STORE_ID})")
 
 
+def check_linux_app() -> None:
+    docs = fetch(LINUX_DOCS, limit=3 * 1024 * 1024)
+    if docs.status != 200:
+        raise ProbeError(f"Linux documentation returned HTTP {docs.status}")
+    for url in LINUX_PACKAGES.values():
+        filename = url.rsplit("/", 1)[-1]
+        if filename.encode("ascii") not in docs.body:
+            raise ProbeError(f"Linux documentation no longer references {filename}")
+
+    for label, url in LINUX_PACKAGES.items():
+        filename = url.rsplit("/", 1)[-1]
+        package = fetch(
+            url,
+            limit=16,
+            headers={"Range": "bytes=0-7", "Accept": "application/octet-stream"},
+            allow_truncated=True,
+        )
+        if package.status not in {200, 206}:
+            raise ProbeError(f"{label} returned HTTP {package.status}")
+        validate_linux_package_prefix(filename, package.body)
+        total_bytes = parse_bounded_total_bytes(
+            package,
+            label,
+            minimum=10 * 1024 * 1024,
+            maximum=800 * 1024 * 1024,
+        )
+        print(f"OK: {label} range probe ({total_bytes} total bytes)")
+
+
 def main() -> int:
     checks = [
         ("official bootstrap endpoints", check_bootstraps),
         ("releases.openai.com latest metadata", check_release_metadata),
         ("npm latest metadata", check_npm_latest),
         ("Windows app URLs", check_windows_app),
+        ("Linux app URLs", check_linux_app),
     ]
     failures: list[str] = []
     for label, check in checks:

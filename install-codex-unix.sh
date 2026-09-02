@@ -12,11 +12,15 @@ umask 077
 OFFICIAL_BOOTSTRAP_ENTRY_URL="https://chatgpt.com/codex/install.sh"
 OFFICIAL_BOOTSTRAP_URL="https://releases.openai.com/codex/install.sh"
 BOOTSTRAP_URL="${CODEX_BOOTSTRAP_URL:-$OFFICIAL_BOOTSTRAP_URL}"
+GITHUB_BOOTSTRAP_LATEST_URL="https://github.com/openai/codex/releases/latest/download/install.sh"
 BOOTSTRAP_MIN_BYTES=1024
 BOOTSTRAP_MAX_BYTES=1048576
+LINUX_APP_MAX_BYTES=838860800
+LINUX_APP_MIN_BYTES=10485760
 
 UPDATE=0
 METHOD="standalone"
+NETWORK_MODE="${CODEX_NETWORK_MODE:-auto}"
 RELEASE="${CODEX_RELEASE:-latest}"
 CHECK_ONLY=0
 VERIFY_DOWNLOADS=0
@@ -29,10 +33,15 @@ OS_FAMILY=""
 OS_NAME=""
 OS_VERSION=""
 ARCH=""
+LINUX_ID=""
+LINUX_VERSION_ID=""
+LINUX_APP_FORMAT=""
+LINUX_APP_REASON=""
 WORK_DIR=""
 LOG_FILE=""
 CODEX_BIN=""
 NPM_ENV=()
+BOOTSTRAP_SOURCE=""
 
 usage() {
   cat <<'EOF'
@@ -43,10 +52,12 @@ usage() {
   --update                    更新 Codex CLI；默认仍使用官方 standalone 安装器
   --release VERSION           安装指定版本（默认：latest）
   --method METHOD             standalone、brew 或 npm（默认：standalone）
+  --network MODE              auto、official 或 github（默认：auto）
   --check-only                仅做只读预检，不安装、不创建用户目录或日志
   --verify-downloads          实际下载并检查官方 standalone bootstrap
   --non-interactive           禁用官方安装器的交互提示
   --install-app               CLI 成功后调用当前 codex app 官方流程
+  --skip-app                  跳过桌面应用（Linux 薄入口默认会请求安装）
   --require-app               要求 app 流程成功；同时启用 --install-app
   --install-dev-tools         检查 Git；macOS 启动 CLT，Linux 给出系统包命令
   --help, -h                  显示帮助
@@ -54,6 +65,7 @@ usage() {
 可选环境变量：
   CODEX_BOOTSTRAP_SHA256      固定 bootstrap 的 64 位 SHA-256
   CODEX_BOOTSTRAP_URL         企业镜像地址；严格 HTTPS 且必须同时提供 SHA-256 pin
+  CODEX_NETWORK_MODE          auto、official 或 github；自定义 bootstrap URL 时忽略
   CODEX_INSTALL_DIR           官方 standalone 安装器的 CLI 目录
   CODEX_NPM_REGISTRY          npm 命令本次使用的 HTTPS registry
   CODEX_NPM_PREFIX            npm 命令本次使用的绝对 prefix
@@ -126,6 +138,15 @@ parse_args() {
         METHOD="${1#*=}"
         [ -n "$METHOD" ] || die "--method 需要一个参数。"
         ;;
+      --network)
+        require_value "$@"
+        NETWORK_MODE="$2"
+        shift
+        ;;
+      --network=*)
+        NETWORK_MODE="${1#*=}"
+        [ -n "$NETWORK_MODE" ] || die "--network 需要一个参数。"
+        ;;
       --check-only)
         CHECK_ONLY=1
         ;;
@@ -137,6 +158,10 @@ parse_args() {
         ;;
       --install-app)
         INSTALL_APP=1
+        ;;
+      --skip-app)
+        INSTALL_APP=0
+        REQUIRE_APP=0
         ;;
       --require-app)
         REQUIRE_APP=1
@@ -221,6 +246,14 @@ validate_options() {
       ;;
   esac
 
+  case "$NETWORK_MODE" in
+    auto|official|github)
+      ;;
+    *)
+      die "--network 仅支持 auto、official 或 github。"
+      ;;
+  esac
+
   validate_release
   validate_https_url "$BOOTSTRAP_URL" "CODEX_BOOTSTRAP_URL" 1
 
@@ -265,7 +298,9 @@ validate_options() {
   fi
 
   if { [ -n "${CODEX_TEST_UNAME_S:-}" ] || [ -n "${CODEX_TEST_OS:-}" ] ||
-    [ -n "${CODEX_TEST_ARCH:-}" ] || [ -n "${CODEX_TEST_OS_VERSION:-}" ]; } &&
+    [ -n "${CODEX_TEST_ARCH:-}" ] || [ -n "${CODEX_TEST_OS_VERSION:-}" ] ||
+    [ -n "${CODEX_TEST_LINUX_ID:-}" ] ||
+    [ -n "${CODEX_TEST_LINUX_VERSION_ID:-}" ]; } &&
     [ "$CHECK_ONLY" != "1" ]; then
     die "CODEX_TEST_* 仅允许与 --check-only 一起使用。"
   fi
@@ -333,6 +368,40 @@ detect_platform() {
   fi
 }
 
+read_os_release_value() {
+  local key="$1"
+  local value=""
+  [ -r /etc/os-release ] || return 0
+  value="$(sed -n "s/^${key}=//p" /etc/os-release | sed -n '1p')"
+  case "$value" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+detect_linux_app_support() {
+  [ "$OS_FAMILY" = "linux" ] || return 0
+
+  LINUX_ID="${CODEX_TEST_LINUX_ID:-$(read_os_release_value ID)}"
+  LINUX_VERSION_ID="${CODEX_TEST_LINUX_VERSION_ID:-$(read_os_release_value VERSION_ID)}"
+  LINUX_ID="$(printf '%s' "$LINUX_ID" | LC_ALL=C tr 'A-Z' 'a-z')"
+
+  case "$LINUX_ID:$LINUX_VERSION_ID" in
+    ubuntu:24.04|ubuntu:26.04|debian:13)
+      LINUX_APP_FORMAT="deb"
+      ;;
+    fedora:43|fedora:44)
+      LINUX_APP_FORMAT="rpm"
+      ;;
+    *)
+      LINUX_APP_REASON="官方 Linux 桌面预览暂仅支持 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44；当前为 ${LINUX_ID:-未知} ${LINUX_VERSION_ID:-未知}。"
+      ;;
+  esac
+}
+
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "缺少必需命令：$1"
 }
@@ -382,6 +451,7 @@ check_prerequisites() {
     require_command chmod
     require_command tee
   fi
+
 }
 
 show_plan() {
@@ -392,13 +462,29 @@ show_plan() {
   info "系统：$OS_NAME $OS_VERSION"
   info "架构：$ARCH"
   info "安装方法：$METHOD"
+  info "网络模式：$NETWORK_MODE"
   info "目标版本：$RELEASE"
   if [ "$METHOD" = "standalone" ]; then
-    info "官方 bootstrap：$BOOTSTRAP_URL"
+    if [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_URL" ] &&
+      [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_ENTRY_URL" ]; then
+      info "bootstrap：$BOOTSTRAP_URL（组织自定义并要求 SHA-256 pin）"
+    elif [ "$NETWORK_MODE" = "auto" ]; then
+      info "bootstrap：优先 OpenAI CDN；短时不可用时自动切换 OpenAI GitHub Release"
+    elif [ "$NETWORK_MODE" = "github" ]; then
+      info "bootstrap：OpenAI GitHub Release"
+    else
+      info "bootstrap：$BOOTSTRAP_URL"
+    fi
     info "bootstrap 将先下载到 0700 随机临时目录，检查后再执行（不会 pipe-to-sh）。"
   fi
   if [ "$INSTALL_APP" = "1" ]; then
-    info "桌面端：CLI 成功后调用当前 codex app 官方流程"
+    if [ "$OS_FAMILY" = "linux" ] && [ -n "$LINUX_APP_FORMAT" ]; then
+      info "桌面端：官方 Linux ${LINUX_APP_FORMAT} 包（${LINUX_ID} ${LINUX_VERSION_ID}）"
+    elif [ "$OS_FAMILY" = "linux" ]; then
+      info "桌面端：将跳过；$LINUX_APP_REASON"
+    else
+      info "桌面端：CLI 成功后调用当前 codex app 官方流程"
+    fi
   else
     info "桌面端：不安装"
   fi
@@ -454,37 +540,58 @@ validate_bootstrap() {
   local file="$1"
   local bytes first_line actual expected
 
-  [ -f "$file" ] || die "bootstrap 下载后不存在。"
+  if [ ! -f "$file" ]; then
+    warn "bootstrap 下载后不存在。"
+    return 1
+  fi
   bytes="$(wc -c <"$file" | tr -d '[:space:]')"
   case "$bytes" in
     ''|*[!0-9]*)
-      die "无法判断 bootstrap 大小。"
+      warn "无法判断 bootstrap 大小。"
+      return 1
       ;;
   esac
-  [ "$bytes" -ge "$BOOTSTRAP_MIN_BYTES" ] ||
-    die "bootstrap 仅 $bytes 字节，疑似错误页或截断响应。"
-  [ "$bytes" -le "$BOOTSTRAP_MAX_BYTES" ] ||
-    die "bootstrap 达到 $bytes 字节，超过安全上限。"
+  if [ "$bytes" -lt "$BOOTSTRAP_MIN_BYTES" ]; then
+    warn "bootstrap 仅 $bytes 字节，疑似错误页或截断响应。"
+    return 1
+  fi
+  if [ "$bytes" -gt "$BOOTSTRAP_MAX_BYTES" ]; then
+    warn "bootstrap 达到 $bytes 字节，超过安全上限。"
+    return 1
+  fi
 
   first_line="$(head -n 1 "$file")"
   case "$first_line" in
     '#!'*sh*)
       ;;
     *)
-      die "bootstrap 没有预期的 shell shebang。"
+      warn "bootstrap 没有预期的 shell shebang。"
+      return 1
       ;;
   esac
 
-  LC_ALL=C grep -Iq '^' "$file" || die "bootstrap 不是文本 shell 脚本。"
-  grep -q 'CODEX_RELEASE' "$file" ||
-    die "bootstrap 缺少预期的 CODEX_RELEASE 标识。"
-  grep -q -- '--release' "$file" ||
-    die "bootstrap 缺少预期的 --release 接口。"
-  grep -q 'Codex CLI' "$file" ||
-    die "bootstrap 缺少预期的 Codex CLI 标识。"
+  if ! LC_ALL=C grep -Iq '^' "$file"; then
+    warn "bootstrap 不是文本 shell 脚本。"
+    return 1
+  fi
+  if ! grep -q 'CODEX_RELEASE' "$file"; then
+    warn "bootstrap 缺少预期的 CODEX_RELEASE 标识。"
+    return 1
+  fi
+  if ! grep -q -- '--release' "$file"; then
+    warn "bootstrap 缺少预期的 --release 接口。"
+    return 1
+  fi
+  if ! grep -q 'Codex CLI' "$file"; then
+    warn "bootstrap 缺少预期的 Codex CLI 标识。"
+    return 1
+  fi
 
-  actual="$(sha256_file "$file" | LC_ALL=C tr 'A-F' 'a-f')" ||
-    die "无法计算 bootstrap SHA-256。"
+  if ! actual="$(sha256_file "$file")"; then
+    warn "无法计算 bootstrap SHA-256。"
+    return 1
+  fi
+  actual="$(printf '%s' "$actual" | LC_ALL=C tr 'A-F' 'a-f')"
   info "bootstrap SHA-256：$actual"
 
   if [ -n "${CODEX_BOOTSTRAP_SHA256:-}" ]; then
@@ -492,25 +599,32 @@ validate_bootstrap() {
       LC_ALL=C tr 'A-F' 'a-f')"
     if ! printf '%s\n' "$expected" |
       LC_ALL=C grep -Eq '^[0-9a-f]{64}$'; then
-      die "CODEX_BOOTSTRAP_SHA256 必须是 64 位十六进制值。"
+      warn "CODEX_BOOTSTRAP_SHA256 必须是 64 位十六进制值。"
+      return 1
     fi
-    [ "$actual" = "$expected" ] ||
-      die "bootstrap SHA-256 与 CODEX_BOOTSTRAP_SHA256 不一致。"
+    if [ "$actual" != "$expected" ]; then
+      warn "bootstrap SHA-256 与 CODEX_BOOTSTRAP_SHA256 不一致。"
+      return 1
+    fi
     info "bootstrap SHA-256 pin 校验通过。"
   fi
+  return 0
 }
 
-download_bootstrap() {
-  local target part bytes attempt=1
-  ensure_work_dir
-  target="$WORK_DIR/install.sh"
+github_bootstrap_url() {
+  # bootstrap 始终取最新官方 installer；CLI 目标版本仍由 --release 独立控制。
+  printf '%s\n' "$GITHUB_BOOTSTRAP_LATEST_URL"
+}
 
-  step "下载并检查官方 bootstrap"
-  # Each retry starts from a new file so a partial response can never be
-  # concatenated with the next response. head provides an exact streamed
-  # sentinel byte on both old and new curl versions; validate_bootstrap then
-  # applies the declared ceiling.
-  while [ "$attempt" -le 4 ]; do
+download_bootstrap_candidate() {
+  local url="$1"
+  local target="$2"
+  local connect_timeout="$3"
+  local max_time="$4"
+  local max_attempts="$5"
+  local part bytes attempt=1
+
+  while [ "$attempt" -le "$max_attempts" ]; do
     part="$WORK_DIR/install.sh.part.$attempt"
     if curl \
         --disable \
@@ -520,26 +634,71 @@ download_bootstrap() {
         --silent \
         --show-error \
         --location \
-        --connect-timeout 20 \
-        --max-time 180 \
-        "$BOOTSTRAP_URL" |
+        --connect-timeout "$connect_timeout" \
+        --max-time "$max_time" \
+        "$url" |
       head -c "$((BOOTSTRAP_MAX_BYTES + 1))" >"$part"; then
       mv "$part" "$target" ||
         die "无法将已下载 bootstrap 移入私有目标路径。"
-      break
+      chmod 600 "$target" || die "无法设置 bootstrap 私有权限。"
+      if validate_bootstrap "$target"; then
+        return 0
+      fi
+      warn "当前 bootstrap 候选未通过校验，尝试下一候选或重试。"
+      rm -f "$target"
+      attempt=$((attempt + 1))
+      continue
     fi
 
     bytes="$(wc -c <"$part" | tr -d '[:space:]' || true)"
     if [ -n "$bytes" ] && [ "$bytes" -gt "$BOOTSTRAP_MAX_BYTES" ]; then
-      die "bootstrap 下载超过安全上限 $BOOTSTRAP_MAX_BYTES 字节。"
+      warn "bootstrap 候选下载超过安全上限 $BOOTSTRAP_MAX_BYTES 字节，已拒绝该来源。"
+      rm -f "$part"
+      return 1
     fi
     rm -f "$part"
     attempt=$((attempt + 1))
   done
-  [ -f "$target" ] ||
-    die "连续 4 次无法从严格 HTTPS 地址下载 bootstrap：$BOOTSTRAP_URL"
-  chmod 600 "$target" || die "无法设置 bootstrap 私有权限。"
-  validate_bootstrap "$target"
+  return 1
+}
+
+download_bootstrap() {
+  local target github_url
+  ensure_work_dir
+  target="$WORK_DIR/install.sh"
+
+  step "下载并检查官方 bootstrap"
+  # 自定义企业入口只使用已明确配置并固定摘要的 URL，不隐式绕过组织策略。
+  if [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_URL" ] &&
+    [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_ENTRY_URL" ]; then
+    download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 4 ||
+      die "连续 4 次无法从严格 HTTPS 地址下载 bootstrap：$BOOTSTRAP_URL"
+    BOOTSTRAP_SOURCE="custom"
+  elif [ "$NETWORK_MODE" = "github" ]; then
+    github_url="$(github_bootstrap_url)"
+    download_bootstrap_candidate "$github_url" "$target" 15 180 4 ||
+      die "连续 4 次无法从 OpenAI GitHub Release 下载 bootstrap。"
+    BOOTSTRAP_SOURCE="github"
+  elif [ "$NETWORK_MODE" = "official" ]; then
+    download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 4 ||
+      die "连续 4 次无法从 OpenAI 官方 CDN 下载 bootstrap。"
+    BOOTSTRAP_SOURCE="releases"
+  elif download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 5 15 1; then
+    BOOTSTRAP_SOURCE="releases"
+  else
+    warn "OpenAI CDN 快速探测未通过，自动切换 OpenAI GitHub Release，避免等待长超时。"
+    github_url="$(github_bootstrap_url)"
+    if download_bootstrap_candidate "$github_url" "$target" 10 90 3; then
+      BOOTSTRAP_SOURCE="github"
+    else
+      warn "OpenAI GitHub Release 也未快速完成，最后重试 OpenAI CDN。"
+      download_bootstrap_candidate "$BOOTSTRAP_URL" "$target" 20 180 3 ||
+        die "OpenAI CDN 与 OpenAI GitHub Release 均无法下载 bootstrap；请检查代理、DNS 或企业 CA。"
+      BOOTSTRAP_SOURCE="releases"
+    fi
+  fi
+
+  info "bootstrap 来源：$(if [ "$BOOTSTRAP_SOURCE" = "github" ]; then printf 'OpenAI GitHub Release'; elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then printf 'OpenAI CDN'; else printf '组织自定义入口'; fi)"
 }
 
 linux_git_command() {
@@ -626,12 +785,23 @@ npm_command() {
 
 install_standalone() {
   local args=()
+  local installer_env=()
   args+=(--release "$RELEASE")
 
   [ -f "$WORK_DIR/install.sh" ] || download_bootstrap
   step "执行官方 standalone 安装器"
+  if [ "$BOOTSTRAP_SOURCE" = "github" ]; then
+    installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false")
+    info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+  elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then
+    installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=true")
+    info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
+  fi
   if [ "$NON_INTERACTIVE" = "1" ]; then
-    env CODEX_NON_INTERACTIVE=1 /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
+    installer_env+=("CODEX_NON_INTERACTIVE=1")
+  fi
+  if [ "${#installer_env[@]}" -gt 0 ]; then
+    env "${installer_env[@]}" /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
   else
     /bin/sh "$WORK_DIR/install.sh" "${args[@]}"
   fi
@@ -739,6 +909,26 @@ verify_codex() {
 install_app() {
   [ "$INSTALL_APP" = "1" ] || return 0
 
+  if [ "$OS_FAMILY" = "linux" ]; then
+    if [ -z "$LINUX_APP_FORMAT" ]; then
+      if [ "$REQUIRE_APP" = "1" ]; then
+        die "$LINUX_APP_REASON"
+      fi
+      warn "PARTIAL：$LINUX_APP_REASON CLI 已安装并验证。"
+      return
+    fi
+    # App 是可选组件时在子 shell 中隔离 die/exit；关闭子 shell 的 EXIT
+    # trap，避免一次 App 失败提前删除主流程仍需保留的日志和工作目录。
+    if (trap - EXIT; install_linux_app); then
+      return
+    fi
+    if [ "$REQUIRE_APP" = "1" ]; then
+      die "CLI 已安装，但必需的 ChatGPT Linux 桌面应用安装失败。"
+    fi
+    warn "PARTIAL：Codex CLI 已安装并验证，但 ChatGPT Linux 桌面应用未完成。"
+    return
+  fi
+
   step "Codex 桌面端官方流程"
   if "$CODEX_BIN" app; then
     info "codex app 官方流程已成功启动/完成。"
@@ -751,10 +941,163 @@ install_app() {
   warn "PARTIAL：Codex CLI 已安装并验证，但 codex app 官方流程失败。"
 }
 
+linux_app_url() {
+  if [ "$LINUX_APP_FORMAT" = "deb" ] && [ "$ARCH" = "x64" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb\n'
+  elif [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_arm64.deb\n'
+  elif [ "$ARCH" = "x64" ]; then
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.x86_64.rpm\n'
+  else
+    printf 'https://persistent.oaistatic.com/codex-app-prod/linux/rpm/latest/chatgpt.aarch64.rpm\n'
+  fi
+}
+
+download_linux_app() {
+  local url="$1"
+  local target="$2"
+  local part bytes
+  local attempt=1
+  local download_ok
+
+  step "下载 OpenAI 官方 ChatGPT Linux 桌面应用"
+  while [ "$attempt" -le 4 ]; do
+    part="$target.part.$attempt"
+    download_ok=0
+    if curl \
+        --disable \
+        --proto '=https' \
+        --proto-redir '=https' \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --connect-timeout 15 \
+        --max-time 1800 \
+        "$url" |
+      head -c "$((LINUX_APP_MAX_BYTES + 1))" >"$part"; then
+      download_ok=1
+    fi
+    bytes="$(wc -c <"$part" | tr -d '[:space:]')"
+    if [ "$bytes" -gt "$LINUX_APP_MAX_BYTES" ]; then
+      rm -f "$part"
+      die "ChatGPT Linux 包超过安全上限：$bytes 字节。"
+    fi
+    if [ "$download_ok" = "1" ] &&
+      [ "$bytes" -ge "$LINUX_APP_MIN_BYTES" ]; then
+      mv "$part" "$target" || die "无法保存 ChatGPT Linux 包。"
+      chmod 600 "$target" || die "无法设置 ChatGPT Linux 包私有权限。"
+      info "官方桌面包下载完成：$bytes 字节。"
+      return 0
+    fi
+    warn "ChatGPT Linux 包第 $attempt 次下载未完整通过，将使用全新临时文件重试。"
+    rm -f "$part"
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+run_privileged() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif [ "$NON_INTERACTIVE" = "1" ]; then
+    sudo -n "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+validate_linux_app_package() {
+  local target="$1"
+  local name package_arch expected_arch
+
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    name="$(dpkg-deb -f "$target" Package)"
+    package_arch="$(dpkg-deb -f "$target" Architecture)"
+    expected_arch="$(if [ "$ARCH" = "x64" ]; then printf 'amd64'; else printf 'arm64'; fi)"
+  else
+    name="$(rpm -qp --queryformat '%{NAME}' "$target")"
+    package_arch="$(rpm -qp --queryformat '%{ARCH}' "$target")"
+    expected_arch="$(if [ "$ARCH" = "x64" ]; then printf 'x86_64'; else printf 'aarch64'; fi)"
+  fi
+
+  [ "$name" = "chatgpt" ] || die "桌面包名称不匹配：$name"
+  [ "$package_arch" = "$expected_arch" ] ||
+    die "桌面包架构不匹配：期望 $expected_arch，实际 $package_arch"
+  info "桌面包元数据校验通过：chatgpt / $package_arch。"
+}
+
+install_linux_app() {
+  local url target
+
+  step "ChatGPT Linux 桌面应用"
+  require_command curl
+  require_command id
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    require_command dpkg-deb
+    require_command apt
+  else
+    require_command rpm
+    require_command dnf
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    require_command sudo
+  fi
+
+  ensure_work_dir
+  url="$(linux_app_url)"
+  target="$WORK_DIR/chatgpt.$LINUX_APP_FORMAT"
+  download_linux_app "$url" "$target" ||
+    die "无法从 OpenAI 官方 CDN 下载 ChatGPT Linux 桌面包。"
+  validate_linux_app_package "$target"
+
+  if [ "$LINUX_APP_FORMAT" = "deb" ]; then
+    if ! run_privileged apt install -y "$target"; then
+      die "apt 安装 ChatGPT Linux 桌面包失败。"
+    fi
+    dpkg-query -W -f='${Status}\n' chatgpt 2>/dev/null |
+      grep -q '^install ok installed$' ||
+      die "apt 结束后未确认 chatgpt 已安装。"
+  else
+    if ! run_privileged dnf install -y "$target"; then
+      die "dnf 安装 ChatGPT Linux 桌面包失败。"
+    fi
+    rpm -q chatgpt >/dev/null 2>&1 ||
+      die "dnf 结束后未确认 chatgpt 已安装。"
+  fi
+  info "ChatGPT Linux 桌面应用已安装；后续更新由其配置的 OpenAI 软件源提供。"
+}
+
+show_post_install_guide() {
+  step "后续配置参考（安装器不会自动改配置）"
+  info "个人配置：~/.codex/config.toml"
+  info "项目配置：项目目录/.codex/config.toml（仅信任项目后加载）"
+  cat <<'EOF'
+打开并备份个人配置：
+  mkdir -p ~/.codex
+  [ ! -f ~/.codex/config.toml ] || cp ~/.codex/config.toml ~/.codex/config.toml.bak
+  "${EDITOR:-vi}" ~/.codex/config.toml
+
+安全起点示例：
+  model = "gpt-5.6"
+  model_reasoning_effort = "medium"
+  approval_policy = "on-request"
+  sandbox_mode = "workspace-write"
+
+修改后验证：
+  codex --strict-config --version
+  codex doctor --summary
+
+完整案例：docs/configuration.md
+官方参考：https://learn.chatgpt.com/docs/config-file/config-basic
+EOF
+}
+
 main() {
   parse_args "$@"
   validate_options
   detect_platform
+  detect_linux_app_support
   check_prerequisites
   show_plan
   handle_dev_tools
@@ -791,6 +1134,7 @@ main() {
 
   verify_codex
   install_app
+  show_post_install_guide
 
   step "完成"
   info "Codex CLI 已安装并通过 codex --version 验证。"

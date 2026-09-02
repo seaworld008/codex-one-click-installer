@@ -23,6 +23,12 @@
 
 完整变更见 [CHANGELOG.md](CHANGELOG.md)，从 v1.x 升级前请阅读 [v2 迁移指南](docs/migration-v2.md)。
 
+当前 `Unreleased` 版本继续补齐：
+
+- 默认 `auto` 网络模式先快速尝试 OpenAI CDN，异常时自动切换 OpenAI 官方 GitHub Release，并让官方 bootstrap 直接使用对应下载通道。
+- Linux 薄入口默认同时安装官方 ChatGPT 桌面应用；自动识别官方支持的 Ubuntu、Debian、Fedora 版本与 x64/ARM64 包。
+- 安装结束直接输出个人/项目配置位置、安全起点、验证命令和可复制的 [配置案例](docs/configuration.md)。
+
 ## 快速开始
 
 从 [Releases](https://github.com/seaworld008/codex-one-click-installer/releases/latest) 下载最新版并校验 SHA256，解压后使用对应入口。
@@ -31,7 +37,7 @@
 | --- | --- | --- | --- |
 | Windows | 双击 `Windows双击安装Codex.cmd` | 双击 `Windows双击更新Codex.cmd` | 安装/更新 CLI，并尝试安装/更新桌面应用；开发工具必须显式选择 |
 | macOS | 双击 `macOS双击安装Codex.command` | 双击 `macOS双击更新Codex.command` | 安装/更新 CLI，并打开官方桌面应用流程；开发工具必须显式选择 |
-| Linux | `./install-codex-linux.sh` | `./install-codex-linux.sh --update` | 默认仅安装/更新 CLI |
+| Linux | `./install-codex-linux.sh` | `./install-codex-linux.sh --update` | 安装/更新 CLI，并在官方支持的桌面发行版上尝试安装/更新桌面应用 |
 
 安装后重新打开终端，执行：
 
@@ -49,7 +55,7 @@ codex
 | Windows 11 | x64 / Arm64 | 推荐 | 原生 PowerShell 路径；桌面应用支持官方 Windows sandbox |
 | Windows 10 1809+ | x64 | 尽力兼容 | CLI 最低 build 17763；桌面应用最低 build 19041，较旧 LTSC 会跳过桌面步骤 |
 | macOS | Intel / Apple Silicon | 支持 | CLI 由官方 standalone 安装器选择正确架构 |
-| Linux | x64 / Arm64 | 支持 | 需要 Bash 与 `curl`；桌面应用请按官方发行版文档安装 |
+| Linux | x64 / Arm64 | 支持 | CLI 支持常见现代发行版；桌面应用预览支持 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44 |
 | Windows 8 / 8.1、32 位系统 | — | 不支持 | 已停止维护且不满足现代 Codex 安全与运行时基线 |
 
 Windows 用户如果开发环境主要位于 WSL2，请参考 [OpenAI WSL 指南](https://learn.chatgpt.com/docs/windows/wsl)，并将仓库放在 Linux 文件系统（例如 `~/code`）以获得更好的性能。WSL1 已不再受现代 Codex 支持。
@@ -60,7 +66,7 @@ Windows 用户如果开发环境主要位于 WSL2，请参考 [OpenAI WSL 指南
 
 默认 standalone 路径采用两层校验：
 
-1. 本仓库从固定的 `https://releases.openai.com/codex/install.sh` 或 `https://releases.openai.com/codex/install.ps1` 下载官方 bootstrap 到本次运行专属的临时目录，不使用 `curl | sh` 或 `irm | iex`。它们是官方文档中 `https://chatgpt.com/codex/install.*` 入口重定向后的最终地址。
+1. 本仓库优先从 `https://releases.openai.com/codex/install.sh` 或 `https://releases.openai.com/codex/install.ps1` 下载官方 bootstrap 到本次运行专属的临时目录，不使用 `curl | sh` 或 `irm | iex`。`auto` 模式快速失败时只回退到 `github.com/openai/codex` 的 OpenAI 官方 Release installer。
 2. 官方 bootstrap 从 `releases.openai.com` 获取版本化元数据和 SHA256 清单，在 staging 中安装、自检并原子切换当前版本；官方源不可用时才按其自身逻辑回退 OpenAI 的 GitHub Release。
 
 你还可以用 `CODEX_BOOTSTRAP_SHA256` 固定本次允许执行的 bootstrap 摘要。bootstrap 会随上游更新，因此固定摘要需要由组织自己的发布流程同步维护。
@@ -109,6 +115,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 `
 
 # 指定版本；latest 为默认值
 .\install-codex.ps1 -Release 0.149.1
+
+# 默认自动选择更快的官方通道；也可强制指定
+.\install-codex.ps1 -NetworkMode auto
+.\install-codex.ps1 -NetworkMode github
 
 # 同时安装/更新 ChatGPT 桌面应用
 .\install-codex.ps1 -InstallDesktopApp
@@ -173,7 +183,10 @@ chmod +x install-codex-unix.sh install-codex-linux.sh
 ./install-codex-linux.sh
 ./install-codex-linux.sh --update
 ./install-codex-linux.sh --release 0.149.1
+./install-codex-linux.sh --skip-app
 ```
+
+Linux 薄入口默认请求安装桌面应用。脚本会识别官方支持的发行版，下载有体积上限的官方 `.deb` / `.rpm`，校验 `chatgpt` 包名和目标架构后交给 `apt` / `dnf`；不支持的桌面发行版会保留已验证的 CLI 并报告部分成功。使用 `--skip-app` 可只安装 CLI。
 
 脚本不会擅自使用 root 安装通用开发环境。Linux 使用 `--install-dev-tools` 时只会给出可复制的系统包命令，不会自动执行；macOS 只会在缺少 Git 时启动 Apple Command Line Tools 官方流程。
 
@@ -185,7 +198,9 @@ chmod +x install-codex-unix.sh install-codex-linux.sh
 --update
 --release VERSION
 --method standalone|brew|npm
+--network auto|official|github
 --install-app
+--skip-app
 --require-app
 --install-dev-tools
 --check-only
@@ -207,6 +222,16 @@ CODEX_NPM_REGISTRY=https://registry.npmjs.org \
 # 仅下载并检查官方 bootstrap
 ./install-codex-unix.sh --check-only --verify-downloads --non-interactive
 ```
+
+## 网络自动判断与加速
+
+默认 `auto` 不按 IP 或地区猜测用户位置，而是直接做小体积、短超时的真实可用性判断：
+
+1. OpenAI CDN 能快速返回有效 bootstrap 时继续使用默认官方 CDN。
+2. CDN 快速失败时，切换到 `github.com/openai/codex` 的 OpenAI 官方 Release installer，并设置官方 bootstrap 直接从相同 Release 通道下载，避免先等待 CDN 长超时。
+3. 两个官方通道都未快速完成时，最后重试 CDN并给出代理、DNS、企业 CA 排查提示。
+
+该流程不使用不明二进制镜像，不关闭 TLS，也不改变账号或服务的地区可用性。组织可以用 `--network official` 禁止 GitHub 回退，或用 `--network github` 显式选择 OpenAI 官方 GitHub Release。已有合规代理会通过当前进程的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 自动继承。
 
 ## 更新与安装来源迁移
 
@@ -235,6 +260,26 @@ npm uninstall -g @openai/codex
 ```
 
 不要在验证新安装之前卸载旧版本。安装器也不会替你删除已有 npm、Homebrew、配置、认证或会话数据。
+
+## 安装后的配置修改
+
+安装结束会输出个人配置、项目配置、备份、编辑和验证命令。完整可复制案例见 [安装后的 Codex 配置参考](docs/configuration.md)。
+
+最小安全起点：
+
+```toml
+model = "gpt-5.6"
+model_reasoning_effort = "medium"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+```
+
+安装器不会自动创建或覆盖 `~/.codex/config.toml`。修改后运行：
+
+```bash
+codex --strict-config --version
+codex doctor --summary
+```
 
 ## 认证、代理与企业 CA
 
@@ -328,6 +373,7 @@ Windows 还应使用 Windows PowerShell 5.1 解析并运行 `-CheckOnly`。完�
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
 - [ChatGPT 桌面应用](https://learn.chatgpt.com/docs/app)
 - [Windows 桌面应用](https://learn.chatgpt.com/docs/windows/windows-app)
+- [Linux 桌面应用](https://learn.chatgpt.com/docs/linux/linux-app)
 - [Windows WSL](https://learn.chatgpt.com/docs/windows/wsl)
 - [Codex 认证](https://learn.chatgpt.com/docs/auth)
 - [Codex 配置](https://learn.chatgpt.com/docs/config-file/config-basic)

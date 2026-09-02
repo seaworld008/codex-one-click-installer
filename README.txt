@@ -31,6 +31,12 @@ Linux：
   chmod +x install-codex-unix.sh install-codex-linux.sh
   ./install-codex-linux.sh
 
+Linux 薄入口默认同时请求安装官方 ChatGPT 桌面应用。官方桌面预览支持
+Ubuntu 24.04/26.04、Debian 13、Fedora 43/44 的 x64/Arm64；
+不支持的发行版会保留已验证的 CLI 并报告部分成功。只安装 CLI：
+
+  ./install-codex-linux.sh --skip-app
+
 安装完成后：
 
   codex --version
@@ -86,7 +92,9 @@ Unix 命令行
   --update
   --release VERSION
   --method standalone|brew|npm
+  --network auto|official|github
   --install-app
+  --skip-app
   --require-app
   --install-dev-tools
   --check-only
@@ -99,11 +107,48 @@ Unix 命令行
   ./install-codex-linux.sh --release 0.149.1
   ./install-codex-unix.sh --check-only --verify-downloads --non-interactive
 
+网络自动判断
+------------
+
+默认 auto 模式先短时探测 OpenAI CDN。无法快速取得有效 bootstrap 时，
+自动切换到 github.com/openai/codex 的 OpenAI 官方 Release，并让官方
+bootstrap 直接使用该通道，避免先等待不可用 CDN 的长超时。
+
+  ./install-codex-linux.sh --network official
+  ./install-codex-linux.sh --network github
+  .\install-codex.ps1 -NetworkMode official
+  .\install-codex.ps1 -NetworkMode github
+
+流程只使用 OpenAI 官方 CDN、官方 GitHub Release 和官方桌面包，不关闭 TLS，
+也不改变账号或服务的地区可用性。当前进程的 HTTPS_PROXY / HTTP_PROXY /
+NO_PROXY 会被继承。
+
+安装后配置
+---------
+
+安装完成会直接输出配置位置和修改步骤。个人配置位于：
+
+  ~/.codex/config.toml
+
+安全起点示例：
+
+  model = "gpt-5.6"
+  model_reasoning_effort = "medium"
+  approval_policy = "on-request"
+  sandbox_mode = "workspace-write"
+
+修改后验证：
+
+  codex --strict-config --version
+  codex doctor --summary
+
+完整可复制案例：docs/configuration.md
+
 安全说明
 --------
 
-- 默认固定从 https://releases.openai.com/codex/install.sh 或 install.ps1 下载官方
-  bootstrap；官方文档中的 chatgpt.com/codex/install.* 入口会重定向到这里。
+- 默认优先从 https://releases.openai.com/codex/install.sh 或 install.ps1 下载官方
+  bootstrap；快速失败时只回退 OpenAI 官方 GitHub Release。
 - bootstrap 先保存到本次运行专属临时目录，再执行；不使用 curl | sh / irm | iex。
 - 官方 bootstrap 会验证版本化 Codex 包的 SHA256，并使用锁、staging 和原子切换。
 - 不执行自定义 EXE，不安装任意远程 Skills ZIP。
