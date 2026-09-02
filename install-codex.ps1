@@ -1194,7 +1194,8 @@ function Install-DesktopAppFromMsix {
         -Url $url `
         -OutFile $script:DesktopMsixPath `
         -MinimumBytes 1048576 `
-        -MaximumBytes 1073741824
+        -MaximumBytes 1073741824 `
+        -TimeoutMilliseconds 3600000
 
     Assert-DesktopMsixIdentity -Path $script:DesktopMsixPath -Architecture $Architecture
 

@@ -616,6 +616,7 @@ class RepositoryContractTests(unittest.TestCase):
             "-MaximumBytes 2097152",
             "-MinimumBytes 1048576",
             "-MaximumBytes 1073741824",
+            "-TimeoutMilliseconds 3600000",
             '$expectedName = "OpenAI.Codex"',
             '$expectedPublisher = "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B"',
             "AppxManifest.xml",
@@ -891,6 +892,69 @@ class RepositoryContractTests(unittest.TestCase):
                 call_log,
             )
 
+    def test_linux_app_retry_discards_partial_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            fake_bin = base / "bin"
+            work_dir = base / "work"
+            target = work_dir / "chatgpt.deb"
+            state = base / "curl-state"
+            fake_bin.mkdir()
+            work_dir.mkdir()
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "count=0\n"
+                '[ ! -f "$FAKE_CURL_STATE" ] || '
+                'count="$(/bin/cat "$FAKE_CURL_STATE")"\n'
+                "count=$((count + 1))\n"
+                'printf "%s" "$count" >"$FAKE_CURL_STATE"\n'
+                'if [ "$count" -eq 1 ]; then\n'
+                "  printf 'partial-first-response'\n"
+                "  exit 56\n"
+                "fi\n"
+                "printf 'clean-second-response'\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+
+            unix = read("install-codex-unix.sh")
+            definitions = unix.rsplit('\nmain "$@"', maxsplit=1)[0]
+            harness = base / "download-linux-app.sh"
+            harness.write_text(
+                definitions
+                + "\nLINUX_APP_MIN_BYTES=5\n"
+                + "LINUX_APP_MAX_BYTES=64\n"
+                + 'WORK_DIR="$FAKE_WORK_DIR"\n'
+                + "trap - EXIT\n"
+                + 'download_linux_app "https://example.invalid/chatgpt.deb" '
+                + '"$FAKE_TARGET"\n',
+                encoding="utf-8",
+            )
+
+            result = subprocess.run(
+                ["bash", str(harness)],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    "FAKE_CURL_STATE": str(state),
+                    "FAKE_WORK_DIR": str(work_dir),
+                    "FAKE_TARGET": str(target),
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "2")
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "clean-second-response",
+            )
+            self.assertEqual(list(work_dir.glob("*.part.*")), [])
+
     def test_linux_wrapper_defaults_to_official_desktop_app(self) -> None:
         wrapper = read("install-codex-linux.sh")
         self.assertIn(
@@ -905,6 +969,7 @@ class RepositoryContractTests(unittest.TestCase):
             "rpm -qp --queryformat",
             'name" = "chatgpt',
             "LINUX_APP_MAX_BYTES=838860800",
+            'part="$target.part.$attempt"',
             "--skip-app",
             "(trap - EXIT; install_linux_app)",
             "if ! run_privileged apt install -y",
@@ -913,6 +978,7 @@ class RepositoryContractTests(unittest.TestCase):
             "dnf 安装 ChatGPT Linux 桌面包失败",
         ):
             self.assertIn(contract, unix)
+        self.assertNotIn("--retry-all-errors", unix)
 
         environment = {
             **os.environ,

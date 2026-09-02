@@ -954,36 +954,45 @@ linux_app_url() {
 download_linux_app() {
   local url="$1"
   local target="$2"
-  local part="$target.part"
-  local bytes
+  local part bytes
+  local attempt=1
+  local download_ok
 
   step "下载 OpenAI 官方 ChatGPT Linux 桌面应用"
-  if ! curl \
-      --disable \
-      --proto '=https' \
-      --proto-redir '=https' \
-      --fail \
-      --silent \
-      --show-error \
-      --location \
-      --retry 3 \
-      --retry-all-errors \
-      --connect-timeout 15 \
-      --max-time 1800 \
-      "$url" |
-    head -c "$((LINUX_APP_MAX_BYTES + 1))" >"$part"; then
+  while [ "$attempt" -le 4 ]; do
+    part="$target.part.$attempt"
+    download_ok=0
+    if curl \
+        --disable \
+        --proto '=https' \
+        --proto-redir '=https' \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --connect-timeout 15 \
+        --max-time 1800 \
+        "$url" |
+      head -c "$((LINUX_APP_MAX_BYTES + 1))" >"$part"; then
+      download_ok=1
+    fi
+    bytes="$(wc -c <"$part" | tr -d '[:space:]')"
+    if [ "$bytes" -gt "$LINUX_APP_MAX_BYTES" ]; then
+      rm -f "$part"
+      die "ChatGPT Linux 包超过安全上限：$bytes 字节。"
+    fi
+    if [ "$download_ok" = "1" ] &&
+      [ "$bytes" -ge "$LINUX_APP_MIN_BYTES" ]; then
+      mv "$part" "$target" || die "无法保存 ChatGPT Linux 包。"
+      chmod 600 "$target" || die "无法设置 ChatGPT Linux 包私有权限。"
+      info "官方桌面包下载完成：$bytes 字节。"
+      return 0
+    fi
+    warn "ChatGPT Linux 包第 $attempt 次下载未完整通过，将使用全新临时文件重试。"
     rm -f "$part"
-    return 1
-  fi
-  bytes="$(wc -c <"$part" | tr -d '[:space:]')"
-  if [ "$bytes" -lt "$LINUX_APP_MIN_BYTES" ] ||
-    [ "$bytes" -gt "$LINUX_APP_MAX_BYTES" ]; then
-    rm -f "$part"
-    die "ChatGPT Linux 包大小异常：$bytes 字节。"
-  fi
-  mv "$part" "$target" || die "无法保存 ChatGPT Linux 包。"
-  chmod 600 "$target" || die "无法设置 ChatGPT Linux 包私有权限。"
-  info "官方桌面包下载完成：$bytes 字节。"
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 run_privileged() {
