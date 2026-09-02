@@ -587,11 +587,8 @@ validate_bootstrap() {
 }
 
 github_bootstrap_url() {
-  if [ "$RELEASE" = "latest" ]; then
-    printf '%s\n' "$GITHUB_BOOTSTRAP_LATEST_URL"
-  else
-    printf 'https://github.com/openai/codex/releases/download/rust-v%s/install.sh\n' "$RELEASE"
-  fi
+  # bootstrap 始终取最新官方 installer；CLI 目标版本仍由 --release 独立控制。
+  printf '%s\n' "$GITHUB_BOOTSTRAP_LATEST_URL"
 }
 
 download_bootstrap_candidate() {

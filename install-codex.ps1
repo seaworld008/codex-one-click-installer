@@ -604,17 +604,8 @@ function Download-File {
 }
 
 function Get-GithubBootstrapUrl {
-    $requested = $Release.Trim()
-    if ($requested -eq "latest") {
-        return $GithubBootstrapLatestUrl
-    }
-    $normalized = $requested
-    if ($normalized.StartsWith("rust-v", [System.StringComparison]::Ordinal)) {
-        $normalized = $normalized.Substring(6)
-    } elseif ($normalized.StartsWith("v", [System.StringComparison]::Ordinal)) {
-        $normalized = $normalized.Substring(1)
-    }
-    return "https://github.com/openai/codex/releases/download/rust-v$normalized/install.ps1"
+    # bootstrap 始终取最新官方 installer；CLI 目标版本仍由 -Release 独立控制。
+    return $GithubBootstrapLatestUrl
 }
 
 function Download-OfficialBootstrap {
