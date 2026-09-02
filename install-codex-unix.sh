@@ -791,6 +791,9 @@ install_standalone() {
   if [ "$BOOTSTRAP_SOURCE" = "github" ]; then
     installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false")
     info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+  elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then
+    installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=true")
+    info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
   fi
   if [ "$NON_INTERACTIVE" = "1" ]; then
     installer_env+=("CODEX_NON_INTERACTIVE=1")
@@ -1038,12 +1041,16 @@ install_linux_app() {
   validate_linux_app_package "$target"
 
   if [ "$LINUX_APP_FORMAT" = "deb" ]; then
-    run_privileged apt install -y "$target"
+    if ! run_privileged apt install -y "$target"; then
+      die "apt 安装 ChatGPT Linux 桌面包失败。"
+    fi
     dpkg-query -W -f='${Status}\n' chatgpt 2>/dev/null |
       grep -q '^install ok installed$' ||
       die "apt 结束后未确认 chatgpt 已安装。"
   else
-    run_privileged dnf install -y "$target"
+    if ! run_privileged dnf install -y "$target"; then
+      die "dnf 安装 ChatGPT Linux 桌面包失败。"
+    fi
     rpm -q chatgpt >/dev/null 2>&1 ||
       die "dnf 结束后未确认 chatgpt 已安装。"
   fi

@@ -609,6 +609,10 @@ class RepositoryContractTests(unittest.TestCase):
             "[Parameter(Mandatory=$true)][long]$MaximumBytes",
             "$response.ContentLength -gt $MaximumBytes",
             "$totalBytes + [long]$bytesRead -gt $MaximumBytes",
+            "[System.Diagnostics.Stopwatch]::StartNew()",
+            "$downloadTimer.ElapsedMilliseconds",
+            "$asyncRead.AsyncWaitHandle.WaitOne([int]$remainingMilliseconds)",
+            "$request.Abort()",
             "-MaximumBytes 2097152",
             "-MinimumBytes 1048576",
             "-MaximumBytes 1073741824",
@@ -630,6 +634,7 @@ class RepositoryContractTests(unittest.TestCase):
             '[ValidateSet("auto", "official", "github")]',
             "function Download-AndValidateOfficialBootstrap",
             "function Download-OfficialBootstrap",
+            '"true",',
         ):
             self.assertIn(contract, windows)
         helper = windows.split(
@@ -645,6 +650,14 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertNotIn('Arguments @("--registry"', windows)
         self.assertIn('"npm_config_registry", $NpmRegistry.Trim()', windows)
+        standalone = windows.split(
+            "function Invoke-StandaloneInstall", maxsplit=1
+        )[1].split("function Get-NpmRelease", maxsplit=1)[0]
+        self.assertIn('$script:BootstrapSource -eq "releases"', standalone)
+        self.assertIn(
+            '"CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",\n                "true"',
+            standalone,
+        )
 
     def test_test_overrides_are_strictly_check_only(self) -> None:
         windows = read("install-codex.ps1")
@@ -701,9 +714,17 @@ class RepositoryContractTests(unittest.TestCase):
             '/bin/sh "$WORK_DIR/install.sh"',
             "https://github.com/openai/codex/releases/latest/download/install.sh",
             "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false",
+            "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=true",
             "--network 仅支持 auto、official 或 github",
         ):
             self.assertIn(contract, unix)
+        standalone = unix.split("install_standalone() {", maxsplit=1)[1].split(
+            "install_brew() {", maxsplit=1
+        )[0]
+        self.assertIn(
+            'elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then',
+            standalone,
+        )
         self.assertIn("[^0-9A-Za-z.+-]", unix)
         for wrapper_path in (
             "install-codex-linux.sh",
@@ -886,6 +907,10 @@ class RepositoryContractTests(unittest.TestCase):
             "LINUX_APP_MAX_BYTES=838860800",
             "--skip-app",
             "(trap - EXIT; install_linux_app)",
+            "if ! run_privileged apt install -y",
+            "if ! run_privileged dnf install -y",
+            "apt 安装 ChatGPT Linux 桌面包失败",
+            "dnf 安装 ChatGPT Linux 桌面包失败",
         ):
             self.assertIn(contract, unix)
 

@@ -530,6 +530,7 @@ function Download-File {
     $outputStream = $null
     $downloadError = $null
     [long]$totalBytes = 0
+    $downloadTimer = [System.Diagnostics.Stopwatch]::StartNew()
 
     try {
         # HttpWebRequest 在 Windows PowerShell 5.1 可用，并沿用 Windows 的系统代理、
@@ -571,7 +572,32 @@ function Download-File {
             [System.IO.FileShare]::None
         )
         $buffer = New-Object byte[] 65536
-        while (($bytesRead = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        while ($true) {
+            [long]$remainingMilliseconds = (
+                [long]$TimeoutMilliseconds - $downloadTimer.ElapsedMilliseconds
+            )
+            if ($remainingMilliseconds -le 0) {
+                $request.Abort()
+                throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+            }
+
+            # 用整个下载的剩余预算等待异步读取，避免代理持续滴流时每次 Read
+            # 都在单次 ReadWriteTimeout 内完成，却让快速探测无限延长。
+            $asyncRead = $inputStream.BeginRead($buffer, 0, $buffer.Length, $null, $null)
+            try {
+                if (-not $asyncRead.AsyncWaitHandle.WaitOne([int]$remainingMilliseconds)) {
+                    $request.Abort()
+                    throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+                }
+                $bytesRead = $inputStream.EndRead($asyncRead)
+            } finally {
+                $asyncRead.AsyncWaitHandle.Close()
+            }
+            if ($downloadTimer.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                $request.Abort()
+                throw "$Name 下载超过总耗时上限 $TimeoutMilliseconds 毫秒。"
+            }
+            if ($bytesRead -le 0) { break }
             if ($totalBytes + [long]$bytesRead -gt $MaximumBytes) {
                 throw "$Name 实际大小超过上限 $MaximumBytes 字节。"
             }
@@ -585,6 +611,7 @@ function Download-File {
         if ($null -ne $outputStream) { $outputStream.Dispose() }
         if ($null -ne $inputStream) { $inputStream.Dispose() }
         if ($null -ne $response) { $response.Dispose() }
+        $downloadTimer.Stop()
     }
 
     if ($null -ne $downloadError) {
@@ -857,6 +884,13 @@ function Invoke-StandaloneInstall {
                 "Process"
             )
             Write-Info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
+        } elseif ($script:BootstrapSource -eq "releases") {
+            [Environment]::SetEnvironmentVariable(
+                "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
+                "true",
+                "Process"
+            )
+            Write-Info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
         }
         $result = Invoke-NativeCommand -Path $powerShell -Arguments $arguments -DisplayName "官方 install.ps1 -Release $($RequestedRelease.Trim())"
     } finally {
