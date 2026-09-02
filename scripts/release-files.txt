@@ -9,6 +9,7 @@ SUPPORT.md
 VERSION
 Windows双击安装Codex.cmd
 Windows双击更新Codex.cmd
+docs/configuration.md
 docs/migration-v2.md
 docs/troubleshooting.md
 install-codex-linux.sh

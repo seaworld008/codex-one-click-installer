@@ -1373,6 +1373,29 @@ function Invoke-CodexDoctorAdvisory {
     }
 }
 
+function Show-PostInstallGuide {
+    Write-Step "后续配置参考（安装器不会自动改配置）"
+    Write-Line '个人配置：$HOME\.codex\config.toml' White
+    Write-Line '项目配置：项目目录\.codex\config.toml（仅信任项目后加载）' White
+    Write-Line "" White
+    Write-Line "打开并备份个人配置：" White
+    Write-Line '  New-Item -ItemType Directory -Force "$HOME\.codex" | Out-Null' DarkGray
+    Write-Line '  if (Test-Path "$HOME\.codex\config.toml") { Copy-Item "$HOME\.codex\config.toml" "$HOME\.codex\config.toml.bak" }' DarkGray
+    Write-Line '  notepad "$HOME\.codex\config.toml"' DarkGray
+    Write-Line "" White
+    Write-Line "安全起点示例：" White
+    Write-Line '  model = "gpt-5.6"' DarkGray
+    Write-Line '  model_reasoning_effort = "medium"' DarkGray
+    Write-Line '  approval_policy = "on-request"' DarkGray
+    Write-Line '  sandbox_mode = "workspace-write"' DarkGray
+    Write-Line "" White
+    Write-Line "修改后验证：" White
+    Write-Line "  codex --strict-config --version" DarkGray
+    Write-Line "  codex doctor --summary" DarkGray
+    Write-Line "完整案例：docs/configuration.md" White
+    Write-Line "官方参考：https://learn.chatgpt.com/docs/config-file/config-basic" White
+}
+
 function Remove-DownloadedArtifacts {
     foreach ($path in @($script:BootstrapPath, $script:DesktopMsixPath)) {
         if (-not [string]::IsNullOrWhiteSpace($path)) {
@@ -1478,6 +1501,7 @@ try {
         }
 
         Invoke-CodexDoctorAdvisory -Codex $codexCommand
+        Show-PostInstallGuide
 
         Write-Line ""
         if ($partialFailures.Count -gt 0) {

@@ -1021,6 +1021,31 @@ install_linux_app() {
   info "ChatGPT Linux 桌面应用已安装；后续更新由其配置的 OpenAI 软件源提供。"
 }
 
+show_post_install_guide() {
+  step "后续配置参考（安装器不会自动改配置）"
+  info "个人配置：~/.codex/config.toml"
+  info "项目配置：项目目录/.codex/config.toml（仅信任项目后加载）"
+  cat <<'EOF'
+打开并备份个人配置：
+  mkdir -p ~/.codex
+  [ ! -f ~/.codex/config.toml ] || cp ~/.codex/config.toml ~/.codex/config.toml.bak
+  "${EDITOR:-vi}" ~/.codex/config.toml
+
+安全起点示例：
+  model = "gpt-5.6"
+  model_reasoning_effort = "medium"
+  approval_policy = "on-request"
+  sandbox_mode = "workspace-write"
+
+修改后验证：
+  codex --strict-config --version
+  codex doctor --summary
+
+完整案例：docs/configuration.md
+官方参考：https://learn.chatgpt.com/docs/config-file/config-basic
+EOF
+}
+
 main() {
   parse_args "$@"
   validate_options
@@ -1062,6 +1087,7 @@ main() {
 
   verify_codex
   install_app
+  show_post_install_guide
 
   step "完成"
   info "Codex CLI 已安装并通过 codex --version 验证。"

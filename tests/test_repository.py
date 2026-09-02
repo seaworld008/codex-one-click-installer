@@ -30,6 +30,7 @@ EXPECTED_RELEASE_FILES = [
     "VERSION",
     "Windows双击安装Codex.cmd",
     "Windows双击更新Codex.cmd",
+    "docs/configuration.md",
     "docs/migration-v2.md",
     "docs/troubleshooting.md",
     "install-codex-linux.sh",
@@ -893,6 +894,23 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("官方 Linux deb 包（ubuntu 24.04）", result.stdout)
+
+    def test_installers_print_post_install_configuration_reference(self) -> None:
+        unix = read("install-codex-unix.sh")
+        windows = read("install-codex.ps1")
+        docs = read("docs/configuration.md")
+        self.assertIn("~/.codex/config.toml", unix)
+        self.assertIn(r"$HOME\.codex\config.toml", windows)
+        self.assertIn("~/.codex/config.toml", docs)
+        for content in (unix, windows, docs):
+            self.assertIn('model = "gpt-5.6"', content)
+            self.assertIn('approval_policy = "on-request"', content)
+            self.assertIn('sandbox_mode = "workspace-write"', content)
+            self.assertIn("codex --strict-config --version", content)
+        self.assertIn("show_post_install_guide", unix)
+        self.assertIn("Show-PostInstallGuide", windows)
+        self.assertIn("docs/configuration.md", unix)
+        self.assertIn("docs/configuration.md", windows)
 
     def test_enterprise_ca_documentation_matches_bootstrap_trust_boundaries(
         self,
