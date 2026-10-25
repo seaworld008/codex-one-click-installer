@@ -211,6 +211,10 @@ jobs:
             throw "PSScriptAnalyzer reported $($findings.Count) error(s)."
           }
 
+      - name: Verify version output and PATH behavior
+        shell: powershell
+        run: ./tests/test_windows_flow.ps1
+
       - name: Simulate supported and unsupported Windows plans
         shell: powershell
         run: |

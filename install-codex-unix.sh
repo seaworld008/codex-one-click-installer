@@ -42,6 +42,7 @@ LOG_FILE=""
 CODEX_BIN=""
 NPM_ENV=()
 BOOTSTRAP_SOURCE=""
+PARTIAL_FAILURES=()
 
 usage() {
   cat <<'EOF'
@@ -86,6 +87,11 @@ info() {
 
 warn() {
   printf '警告：%s\n' "$1" >&2
+}
+
+record_partial() {
+  PARTIAL_FAILURES+=("$1")
+  warn "PARTIAL：$1"
 }
 
 die() {
@@ -193,7 +199,7 @@ parse_args() {
 validate_release() {
   if ! printf '%s\n' "$RELEASE" |
     LC_ALL=C grep -Eq '^(latest|[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?)$'; then
-    die "无效版本：$RELEASE。请使用 latest 或官方支持的语义化版本。"
+    die "无效版本：${RELEASE}。请使用 latest 或官方支持的语义化版本。"
   fi
 }
 
@@ -345,7 +351,7 @@ detect_platform() {
       OS_VERSION="$(linux_pretty_name)"
       ;;
     *)
-      die "不支持的系统：$raw_os。此脚本仅支持 macOS 和 Linux。"
+      die "不支持的系统：${raw_os}。此脚本仅支持 macOS 和 Linux。"
       ;;
   esac
 
@@ -357,7 +363,7 @@ detect_platform() {
       ARCH="arm64"
       ;;
     *)
-      die "不支持的 CPU 架构：$raw_arch。仅支持 x64 和 arm64。"
+      die "不支持的 CPU 架构：${raw_arch}。仅支持 x64 和 arm64。"
       ;;
   esac
 
@@ -396,10 +402,17 @@ detect_linux_app_support() {
     fedora:43|fedora:44)
       LINUX_APP_FORMAT="rpm"
       ;;
+    arch:*)
+      LINUX_APP_REASON="Arch Linux 已获官方支持，但官方安装脚本会执行完整系统升级，需按官方文档手动确认：https://learn.chatgpt.com/docs/linux/linux-app#install-on-arch-linux"
+      ;;
     *)
-      LINUX_APP_REASON="官方 Linux 桌面预览暂仅支持 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44；当前为 ${LINUX_ID:-未知} ${LINUX_VERSION_ID:-未知}。"
+      LINUX_APP_REASON="本安装器自动安装桌面包仅覆盖 Ubuntu 24.04/26.04、Debian 13、Fedora 43/44；当前为 ${LINUX_ID:-未知} ${LINUX_VERSION_ID:-未知}。"
       ;;
   esac
+
+  if [ "$REQUIRE_APP" = "1" ] && [ -z "$LINUX_APP_FORMAT" ]; then
+    die "--require-app 无法完成：$LINUX_APP_REASON"
+  fi
 }
 
 require_command() {
@@ -417,6 +430,7 @@ check_prerequisites() {
   require_command grep
   require_command sed
   require_command tr
+  require_command wc
 
   case "$METHOD" in
     standalone)
@@ -424,7 +438,6 @@ check_prerequisites() {
       require_command mktemp
       require_command chmod
       require_command mv
-      require_command wc
       require_command head
       require_command tar
       require_command awk
@@ -467,7 +480,7 @@ show_plan() {
   if [ "$METHOD" = "standalone" ]; then
     if [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_URL" ] &&
       [ "$BOOTSTRAP_URL" != "$OFFICIAL_BOOTSTRAP_ENTRY_URL" ]; then
-      info "bootstrap：$BOOTSTRAP_URL（组织自定义并要求 SHA-256 pin）"
+      info "bootstrap：${BOOTSTRAP_URL}（组织自定义并要求 SHA-256 pin）"
     elif [ "$NETWORK_MODE" = "auto" ]; then
       info "bootstrap：优先 OpenAI CDN；短时不可用时自动切换 OpenAI GitHub Release"
     elif [ "$NETWORK_MODE" = "github" ]; then
@@ -749,16 +762,17 @@ handle_dev_tools() {
       info "未检测到 Git；实际运行时将调用 xcode-select --install 启动 Apple CLT 官方流程。"
     elif command -v xcode-select >/dev/null 2>&1; then
       if xcode-select --install >/dev/null 2>&1; then
-        warn "已启动 Apple Command Line Tools 安装。完成后可重新运行本脚本确认 Git。"
+        record_partial "已启动 Apple Command Line Tools 安装，但尚未确认 Git 可用。完成后可重新运行本脚本确认。"
       else
-        warn "Apple CLT 可能已在安装、被策略阻止或需要手动执行：xcode-select --install"
+        record_partial "Apple CLT 可能已在安装、被策略阻止或需要手动执行：xcode-select --install"
       fi
     else
-      warn "系统缺少 xcode-select；请通过 Apple 官方方式安装 Command Line Tools。"
+      record_partial "系统缺少 xcode-select；请通过 Apple 官方方式安装 Command Line Tools。"
     fi
   else
     info "未检测到 Git。请按需复制以下系统包管理器命令："
     linux_git_command
+    [ "$CHECK_ONLY" = "1" ] || record_partial "开发工具 Git 尚未安装，请按上述系统包管理器命令手动补齐。"
   fi
 }
 
@@ -795,7 +809,7 @@ install_standalone() {
     info "已根据网络探测直接使用 OpenAI GitHub Release 资产，跳过不可用 CDN 的等待。"
   elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then
     installer_env+=("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=true")
-    info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
+    info "已根据网络模式优先使用 OpenAI CDN；官方 bootstrap 仍可能自行回退 GitHub。"
   fi
   if [ "$NON_INTERACTIVE" = "1" ]; then
     installer_env+=("CODEX_NON_INTERACTIVE=1")
@@ -861,7 +875,7 @@ resolve_codex_bin() {
 }
 
 verify_codex() {
-  local version_output path_codex expected_version expected_pattern codex_dir
+  local version_output path_codex expected_version actual_version codex_dir
   hash -r
   if ! CODEX_BIN="$(resolve_codex_bin)"; then
     die "安装命令结束，但找不到可执行的 codex。"
@@ -871,7 +885,10 @@ verify_codex() {
   if ! version_output="$("$CODEX_BIN" --version 2>&1)"; then
     die "codex --version 验证失败：$version_output"
   fi
-  [ -n "$version_output" ] || die "codex --version 没有返回版本信息。"
+  actual_version="$(printf '%s\n' "$version_output" | LC_ALL=C sed -nE \
+    's/^codex-cli v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)[[:space:]]*$/\1/p')"
+  [ -n "$actual_version" ] && [ "$(printf '%s\n' "$actual_version" | wc -l | tr -d '[:space:]')" = "1" ] ||
+    die "codex --version 未返回唯一可识别的 codex-cli 版本：$version_output"
   info "本次安装目标：$CODEX_BIN"
   info "$version_output"
 
@@ -879,10 +896,8 @@ verify_codex() {
   expected_version="${expected_version#rust-v}"
   expected_version="${expected_version#v}"
   if [ "$expected_version" != "latest" ]; then
-    expected_pattern="$(printf '%s' "$expected_version" | sed 's/\./\\./g')"
-    if ! printf '%s\n' "$version_output" |
-      LC_ALL=C grep -Eq "(^|[^0-9A-Za-z])v?${expected_pattern}([^0-9A-Za-z.+-]|$)"; then
-      die "本次目标版本与请求版本不一致。请求：$expected_version；实际：$version_output"
+    if [ "$actual_version" != "$expected_version" ]; then
+      die "本次目标版本与请求版本不一致。请求：${expected_version}；实际：$version_output"
     fi
     info "请求版本与本次安装目标一致：$expected_version"
   fi
@@ -890,7 +905,7 @@ verify_codex() {
   path_codex="$(command -v codex 2>/dev/null || true)"
   if [ -n "$path_codex" ]; then
     if [ ! -x "$path_codex" ] || [ ! "$path_codex" -ef "$CODEX_BIN" ]; then
-      die "本次目标已安装并验证，但当前 PATH 优先解析到其他 Codex：$path_codex。请重新打开终端，使 $CODEX_BIN 优先后再重试。"
+      die "本次目标已安装并验证，但当前 PATH 优先解析到其他 Codex：${path_codex}。请重新打开终端，使 $CODEX_BIN 优先后再重试。"
     fi
   else
     codex_dir="$(cd -P "$(dirname "$CODEX_BIN")" && pwd)"
@@ -914,7 +929,7 @@ install_app() {
       if [ "$REQUIRE_APP" = "1" ]; then
         die "$LINUX_APP_REASON"
       fi
-      warn "PARTIAL：$LINUX_APP_REASON CLI 已安装并验证。"
+      record_partial "$LINUX_APP_REASON CLI 已安装并验证。"
       return
     fi
     # App 是可选组件时在子 shell 中隔离 die/exit；关闭子 shell 的 EXIT
@@ -925,7 +940,7 @@ install_app() {
     if [ "$REQUIRE_APP" = "1" ]; then
       die "CLI 已安装，但必需的 ChatGPT Linux 桌面应用安装失败。"
     fi
-    warn "PARTIAL：Codex CLI 已安装并验证，但 ChatGPT Linux 桌面应用未完成。"
+    record_partial "Codex CLI 已安装并验证，但 ChatGPT Linux 桌面应用未完成。"
     return
   fi
 
@@ -938,7 +953,7 @@ install_app() {
   if [ "$REQUIRE_APP" = "1" ]; then
     die "CLI 已安装，但必需的 codex app 官方流程失败。"
   fi
-  warn "PARTIAL：Codex CLI 已安装并验证，但 codex app 官方流程失败。"
+  record_partial "Codex CLI 已安装并验证，但 codex app 官方流程失败。"
 }
 
 linux_app_url() {
@@ -1023,8 +1038,8 @@ validate_linux_app_package() {
 
   [ "$name" = "chatgpt" ] || die "桌面包名称不匹配：$name"
   [ "$package_arch" = "$expected_arch" ] ||
-    die "桌面包架构不匹配：期望 $expected_arch，实际 $package_arch"
-  info "桌面包元数据校验通过：chatgpt / $package_arch。"
+    die "桌面包架构不匹配：期望 ${expected_arch}，实际 $package_arch"
+  info "桌面包元数据校验通过：chatgpt / ${package_arch}。"
 }
 
 install_linux_app() {
@@ -1079,14 +1094,14 @@ show_post_install_guide() {
   "${EDITOR:-vi}" ~/.codex/config.toml
 
 安全起点示例：
-  model = "gpt-5.6"
+  # 模型使用客户端默认值；需要固定时先查看 codex 的 /model 列表。
   model_reasoning_effort = "medium"
   approval_policy = "on-request"
   sandbox_mode = "workspace-write"
 
 修改后验证：
-  codex --strict-config --version
-  codex doctor --summary
+  codex --version
+  codex --strict-config doctor --summary
 
 完整案例：docs/configuration.md
 官方参考：https://learn.chatgpt.com/docs/config-file/config-basic
@@ -1136,7 +1151,12 @@ main() {
   install_app
   show_post_install_guide
 
-  step "完成"
+  if [ "${#PARTIAL_FAILURES[@]}" -gt 0 ]; then
+    step "完成（部分成功）"
+    printf '  - %s\n' "${PARTIAL_FAILURES[@]}"
+  else
+    step "完成"
+  fi
   info "Codex CLI 已安装并通过 codex --version 验证。"
   info "私有日志：$LOG_FILE"
 }

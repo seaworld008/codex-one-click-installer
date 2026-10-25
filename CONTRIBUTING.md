@@ -49,7 +49,10 @@ $errors = $null
 if ($errors.Count) { throw ($errors | Out-String) }
 
 .\install-codex.ps1 -CheckOnly -NonInteractive -NoPause
+.\tests\test_windows_flow.ps1
 ```
+
+`tests/test_installer_flow.py` 在隔离临时目录中替换外部安装步骤，验证 Unix 的版本识别、PATH 冲突、必需桌面预检、部分成功汇总与配置保留。`tests/test_windows_flow.ps1` 只从 AST 加载被测函数，并替换命令发现/执行，用 Windows PowerShell 5.1 验证版本和 PATH 行为；两者均不代表真实平台安装验收。
 
 ## 下载与执行变更
 

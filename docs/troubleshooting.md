@@ -20,6 +20,10 @@ codex doctor --summary --no-color --ascii
 
 安装器会验证本次方法对应的确切目标和显式请求版本。如果它报告 PATH 冲突，先重新打开终端，再检查 `type -a codex` / `Get-Command codex -All`；不要删除尚未确认来源的文件。
 
+`latest` 同样要求 `--version` 返回唯一的 `codex-cli x.y.z` 版本行。空输出、其他程序的版本行、重复版本行或退出码非零都会失败；日志里出现请求版本号不会被当作目标版本成功。
+
+macOS 自带 Bash 3.2 在 UTF-8 环境下可能把紧随未加花括号变量的中文标点误认作变量名。如果旧安装器报 `unbound variable` 且变量名末尾乱码，请更新本安装器；脚本已为这些变量加上明确边界，错误路径也有回归测试。
+
 ## 只做预检
 
 Windows：
@@ -35,6 +39,10 @@ macOS / Linux：
 ```
 
 预检只验证系统、架构、参数和计划，不代表真实下载、安装、Store、代理或登录已经成功。
+
+Linux 的 `--require-app` 也会在预检中确认桌面应用是否存在本安装器支持的自动安装路径；缺少路径会立即失败。Arch Linux 的官方桌面安装脚本需要完整系统升级与人工确认，请按 [官方说明](https://learn.chatgpt.com/docs/linux/linux-app#install-on-arch-linux) 操作，或用 `--skip-app` 只安装 CLI。
+
+Unix 可选桌面应用或开发工具未完成时，CLI 成功仍保留退出码 0，但最终汇总明确显示“完成（部分成功）”并列出原因。自动化必须要求桌面应用成功时使用 `--require-app`。
 
 ## 验证官方 bootstrap
 

@@ -890,7 +890,7 @@ function Invoke-StandaloneInstall {
                 "true",
                 "Process"
             )
-            Write-Info "已根据网络模式固定使用 OpenAI CDN，不继承外部 GitHub Release 偏好。"
+            Write-Info "已根据网络模式优先使用 OpenAI CDN；官方 bootstrap 仍可能自行回退 GitHub。"
         }
         $result = Invoke-NativeCommand -Path $powerShell -Arguments $arguments -DisplayName "官方 install.ps1 -Release $($RequestedRelease.Trim())"
     } finally {
@@ -1378,16 +1378,16 @@ function Confirm-CodexVersion {
         throw "codex --version 验证失败，ExitCode=$($result.ExitCode)。"
     }
 
+    $versionMatches = [regex]::Matches(
+        $result.Output,
+        '(?m)^codex-cli v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)[ \t]*\r?$'
+    )
+    if ($versionMatches.Count -ne 1) {
+        throw "codex --version 未返回唯一可识别的 codex-cli 版本号。"
+    }
+    $actualVersion = $versionMatches[0].Groups[1].Value
     $expectedVersion = Get-RequestedCodexVersion -RequestedRelease $RequestedRelease
     if (-not [string]::IsNullOrWhiteSpace($expectedVersion)) {
-        $versionMatch = [regex]::Match(
-            $result.Output,
-            '(?<![0-9A-Za-z])v?([0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?)?)(?![0-9A-Za-z.+-])'
-        )
-        if (-not $versionMatch.Success) {
-            throw "codex --version 未返回可识别的版本号。"
-        }
-        $actualVersion = $versionMatch.Groups[1].Value
         if ($actualVersion -cne $expectedVersion) {
             throw "Codex CLI 版本不匹配。期望：$expectedVersion；实际：$actualVersion"
         }
@@ -1425,14 +1425,14 @@ function Show-PostInstallGuide {
     Write-Line '  notepad "$HOME\.codex\config.toml"' DarkGray
     Write-Line "" White
     Write-Line "安全起点示例：" White
-    Write-Line '  model = "gpt-5.6"' DarkGray
+    Write-Line '  # 模型使用客户端默认值；需要固定时先查看 codex 的 /model 列表。' DarkGray
     Write-Line '  model_reasoning_effort = "medium"' DarkGray
     Write-Line '  approval_policy = "on-request"' DarkGray
     Write-Line '  sandbox_mode = "workspace-write"' DarkGray
     Write-Line "" White
     Write-Line "修改后验证：" White
-    Write-Line "  codex --strict-config --version" DarkGray
-    Write-Line "  codex doctor --summary" DarkGray
+    Write-Line "  codex --version" DarkGray
+    Write-Line "  codex --strict-config doctor --summary" DarkGray
     Write-Line "完整案例：docs/configuration.md" White
     Write-Line "官方参考：https://learn.chatgpt.com/docs/config-file/config-basic" White
 }
