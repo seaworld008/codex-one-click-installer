@@ -630,7 +630,7 @@ class RepositoryContractTests(unittest.TestCase):
             "function Resolve-CodexInstallDirectory",
             "CODEX_INSTALL_DIR 不得解析为驱动器根或 UNC 共享根",
             "$script:ValidatedCodexInstallDir",
-            "(?![0-9A-Za-z.+-])",
+            "$versionMatches.Count -ne 1",
             "https://github.com/openai/codex/releases/latest/download/install.ps1",
             "CODEX_INSTALLER_USE_RELEASES_OPENAI_COM",
             "OpenAI CDN 快速探测未通过",
@@ -728,7 +728,7 @@ class RepositoryContractTests(unittest.TestCase):
             'elif [ "$BOOTSTRAP_SOURCE" = "releases" ]; then',
             standalone,
         )
-        self.assertIn("[^0-9A-Za-z.+-]", unix)
+        self.assertIn('"$actual_version" != "$expected_version"', unix)
         for wrapper_path in (
             "install-codex-linux.sh",
             "install-codex-macos.sh",
@@ -1052,10 +1052,11 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn(r"$HOME\.codex\config.toml", windows)
         self.assertIn("~/.codex/config.toml", docs)
         for content in (unix, windows, docs):
-            self.assertIn('model = "gpt-5.6"', content)
+            self.assertNotIn('model = "gpt-5.6"', content)
+            self.assertIn("/model", content)
             self.assertIn('approval_policy = "on-request"', content)
             self.assertIn('sandbox_mode = "workspace-write"', content)
-            self.assertIn("codex --strict-config --version", content)
+            self.assertIn("codex --strict-config doctor --summary", content)
         self.assertIn("show_post_install_guide", unix)
         self.assertIn("Show-PostInstallGuide", windows)
         self.assertIn("docs/configuration.md", unix)

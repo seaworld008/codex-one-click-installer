@@ -33,7 +33,7 @@ fi
 ## 日常使用的安全起点
 
 ```toml
-model = "gpt-5.6"
+# 模型使用客户端默认值；需要固定时先查看 codex 的 /model 列表。
 model_reasoning_effort = "medium"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
@@ -42,14 +42,16 @@ sandbox_mode = "workspace-write"
 network_access = true
 ```
 
-这份示例允许在当前工作区写文件并访问网络，工作区之外的敏感操作仍会按需请求批准。模型和可用功能可能因账号、工作区策略和客户端版本不同而变化；如果界面提供的模型不同，以当前 `/model` 列表和组织策略为准。
+这份示例允许在当前工作区写文件并访问网络，工作区之外的敏感操作仍会按需请求批准。示例不固定模型，让客户端使用当前默认值；需要固定模型时，先通过 `/model` 确认账号可用的标识，再添加 `model = "实际模型标识"`。模型和可用功能以当前客户端及组织策略为准。
 
 修改后可先验证配置语法和安装健康度：
 
 ```bash
-codex --strict-config --version
-codex doctor --summary
+codex --version
+codex --strict-config doctor --summary
 ```
+
+请查看 doctor 的 `config` 检查项和具体诊断。`codex --version` 在配置加载之前就会退出，即使加上 `--strict-config` 也不能证明 TOML 正确；doctor 的整体失败还可能来自未登录或网络问题，不能只凭退出码判断配置是否损坏。
 
 如果新配置导致启动失败，先恢复备份：
 

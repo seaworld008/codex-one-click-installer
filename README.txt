@@ -37,6 +37,14 @@ Ubuntu 24.04/26.04、Debian 13、Fedora 43/44 的 x64/Arm64；
 
   ./install-codex-linux.sh --skip-app
 
+官方桌面预览也支持 Arch Linux；其官方脚本会完整升级系统，需手动确认：
+  https://learn.chatgpt.com/docs/linux/linux-app#install-on-arch-linux
+本安装器不会自动执行 Arch 安装脚本。--require-app 在没有自动桌面安装路径时
+会在预检阶段失败；--check-only --require-app 也会失败。
+
+2026-10-25 联网核验 CLI/npm 稳定版为 0.164.0，官方 bootstrap、Store/MSIX、
+Linux deb/rpm 入口均通过探测。latest 会随上游变化，固定版本只是当天示例。
+
 安装完成后：
 
   codex --version
@@ -104,7 +112,7 @@ Unix 命令行
 示例：
 
   ./install-codex-macos.sh --install-app
-  ./install-codex-linux.sh --release 0.149.1
+  ./install-codex-linux.sh --release 0.164.0
   ./install-codex-unix.sh --check-only --verify-downloads --non-interactive
 
 网络自动判断
@@ -113,6 +121,9 @@ Unix 命令行
 默认 auto 模式先短时探测 OpenAI CDN。无法快速取得有效 bootstrap 时，
 自动切换到 github.com/openai/codex 的 OpenAI 官方 Release，并让官方
 bootstrap 直接使用该通道，避免先等待不可用 CDN 的长超时。
+
+official 只限制本包装器的 bootstrap 下载来源；官方 bootstrap 下载后续资产时
+仍可能自行回退 GitHub。该选项不是网络域名隔离策略。
 
   ./install-codex-linux.sh --network official
   ./install-codex-linux.sh --network github
@@ -132,17 +143,22 @@ NO_PROXY 会被继承。
 
 安全起点示例：
 
-  model = "gpt-5.6"
+  # 模型使用客户端默认值；需要固定时先查看 codex 的 /model 列表。
   model_reasoning_effort = "medium"
   approval_policy = "on-request"
   sandbox_mode = "workspace-write"
 
 修改后验证：
 
-  codex --strict-config --version
-  codex doctor --summary
+  codex --version
+  codex --strict-config doctor --summary
 
 完整可复制案例：docs/configuration.md
+
+codex --version 不加载配置，不能用来校验 TOML。请查看 doctor 的 config 检查项；
+认证或网络失败也会影响 doctor 的整体退出码。需要固定模型时先查看 /model。
+安装后所有版本（包括 latest）都必须返回唯一可识别的 codex-cli 版本行；
+Unix 可选桌面/开发工具未完成时，最终汇总会明确标记部分成功。
 
 安全说明
 --------

@@ -16,6 +16,18 @@
 
 - Linux 薄入口默认同时请求安装 ChatGPT 桌面应用，可用 `--skip-app` 明确跳过。
 - Upstream smoke 增加 Linux 官方文档与四个桌面包的有界探测。
+- 2026-10-25 重新联网核验 CLI/npm 稳定版 `0.164.0` 与官方桌面分发入口；固定版本示例同步更新，模型示例改为沿用客户端默认值。
+- 补充 Arch Linux 官方桌面安装指引；其完整系统升级流程需用户手动确认，不纳入自动安装。
+- 说明 `official` 仅约束包装器的 bootstrap 来源，后续资产回退由官方 bootstrap 决定。
+
+### Fixed
+
+- Windows/Unix 所有安装版本（包括 `latest`）都必须返回唯一可识别的 `codex-cli` 版本行；固定版本进行完整字符串比较，拒绝其他程序输出、重复行和日志里的版本号冒充成功。
+- 修复 macOS Bash 3.2 UTF-8 环境中变量紧邻中文标点导致的 `unbound variable`，恢复版本不匹配和 PATH 冲突等错误提示。
+- Linux `--require-app` 在没有自动桌面安装路径时于预检阶段失败，包含 `--check-only`。
+- Unix 可选桌面应用/开发工具未完成时，最终汇总明确报告部分成功。
+- 配置验证指引改用 doctor 的 `config` 检查项；`--strict-config --version` 不会实际加载配置。
+- 新增 Unix 行为测试与 Windows PowerShell 5.1 版本/PATH 行为测试，并加入兼容性 CI。
 
 ## [2.0.1] - 2026-08-25
 

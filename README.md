@@ -28,6 +28,9 @@
 - 默认 `auto` 网络模式先快速尝试 OpenAI CDN，异常时自动切换 OpenAI 官方 GitHub Release，并让官方 bootstrap 直接使用对应下载通道。
 - Linux 薄入口默认同时安装官方 ChatGPT 桌面应用；自动识别官方支持的 Ubuntu、Debian、Fedora 版本与 x64/ARM64 包。
 - 安装结束直接输出个人/项目配置位置、安全起点、验证命令和可复制的 [配置案例](docs/configuration.md)。
+- 安装后强制识别唯一的 `codex-cli` 版本行，拒绝空输出、其他程序输出、重复版本行及错误版本；Unix 最终汇总明确列出可选步骤的部分失败。
+
+2026-10-25 已联网核对官方 bootstrap、CLI/npm 最新稳定版 `0.164.0`、Windows Store/MSIX 和 Linux deb/rpm 下载入口。`latest` 会随上游发布变化；本文中的固定版本仅为当天核验示例。
 
 ## 快速开始
 
@@ -114,7 +117,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install-codex.ps1 `
 .\install-codex.ps1
 
 # 指定版本；latest 为默认值
-.\install-codex.ps1 -Release 0.149.1
+.\install-codex.ps1 -Release 0.164.0
 
 # 默认自动选择更快的官方通道；也可强制指定
 .\install-codex.ps1 -NetworkMode auto
@@ -182,11 +185,13 @@ chmod +x install-codex-unix.sh install-codex-linux.sh
 
 ./install-codex-linux.sh
 ./install-codex-linux.sh --update
-./install-codex-linux.sh --release 0.149.1
+./install-codex-linux.sh --release 0.164.0
 ./install-codex-linux.sh --skip-app
 ```
 
 Linux 薄入口默认请求安装桌面应用。脚本会识别官方支持的发行版，下载有体积上限的官方 `.deb` / `.rpm`，校验 `chatgpt` 包名和目标架构后交给 `apt` / `dnf`；不支持的桌面发行版会保留已验证的 CLI 并报告部分成功。使用 `--skip-app` 可只安装 CLI。
+
+官方桌面预览现在也支持 Arch Linux；其官方脚本会执行完整系统升级并要求确认，因此本安装器只提示 [Arch 官方安装步骤](https://learn.chatgpt.com/docs/linux/linux-app#install-on-arch-linux)，不会自动执行。使用 `--require-app` 时，如果系统没有本安装器可自动执行的桌面安装路径，会在预检阶段失败，尚未安装 CLI；`--check-only --require-app` 同样适用。
 
 脚本不会擅自使用 root 安装通用开发环境。Linux 使用 `--install-dev-tools` 时只会给出可复制的系统包命令，不会自动执行；macOS 只会在缺少 Git 时启动 Apple Command Line Tools 官方流程。
 
@@ -231,7 +236,7 @@ CODEX_NPM_REGISTRY=https://registry.npmjs.org \
 2. CDN 快速失败时，切换到 `github.com/openai/codex` 的 OpenAI 官方 Release installer，并设置官方 bootstrap 直接从相同 Release 通道下载，避免先等待 CDN 长超时。
 3. 两个官方通道都未快速完成时，最后重试 CDN并给出代理、DNS、企业 CA 排查提示。
 
-该流程不使用不明二进制镜像，不关闭 TLS，也不改变账号或服务的地区可用性。组织可以用 `--network official` 禁止 GitHub 回退，或用 `--network github` 显式选择 OpenAI 官方 GitHub Release。已有合规代理会通过当前进程的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 自动继承。
+该流程不使用不明二进制镜像，不关闭 TLS，也不改变账号或服务的地区可用性。`--network official` 限制本包装器仅从 OpenAI CDN 获取 bootstrap，官方 bootstrap 的后续资产下载仍可能自行回退 GitHub；它不是网络域名隔离策略。`--network github` 显式选择 OpenAI 官方 GitHub Release。已有合规代理会通过当前进程的 `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` 自动继承。
 
 ## 更新与安装来源迁移
 
@@ -268,7 +273,7 @@ npm uninstall -g @openai/codex
 最小安全起点：
 
 ```toml
-model = "gpt-5.6"
+# 模型使用客户端默认值；需要固定时先查看 codex 的 /model 列表。
 model_reasoning_effort = "medium"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
@@ -277,9 +282,11 @@ sandbox_mode = "workspace-write"
 安装器不会自动创建或覆盖 `~/.codex/config.toml`。修改后运行：
 
 ```bash
-codex --strict-config --version
-codex doctor --summary
+codex --version
+codex --strict-config doctor --summary
 ```
+
+`codex --version` 只验证 CLI 版本，不会加载并校验配置，即使配置损坏也可能成功。请查看 doctor 的 `config` 检查项；doctor 还会检查认证和网络，整体非零退出码不一定表示配置有误。示例不固定模型，需指定时先在 `/model` 中确认当前账号可用的模型。
 
 ## 认证、代理与企业 CA
 
