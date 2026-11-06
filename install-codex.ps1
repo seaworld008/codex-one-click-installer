@@ -36,6 +36,9 @@ $GithubBootstrapLatestUrl = "https://github.com/openai/codex/releases/latest/dow
 $DesktopStoreId = "9PLM9XGG6VKS"
 $DesktopMsixX64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix"
 $DesktopMsixArm64Url = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix"
+$DesktopMsixMinimumBytes = 1MB
+# Keep this finite bound aligned with the upstream smoke probe after official Arm64 growth.
+$DesktopMsixMaximumBytes = 1200MB
 $DesktopMinimumOsBuild = 19041
 $ActionName = $(if ($Update) { "更新" } else { "安装" })
 
@@ -1193,8 +1196,8 @@ function Install-DesktopAppFromMsix {
         -Name "ChatGPT desktop app MSIX ($Architecture)" `
         -Url $url `
         -OutFile $script:DesktopMsixPath `
-        -MinimumBytes 1048576 `
-        -MaximumBytes 1073741824 `
+        -MinimumBytes $DesktopMsixMinimumBytes `
+        -MaximumBytes $DesktopMsixMaximumBytes `
         -TimeoutMilliseconds 3600000
 
     Assert-DesktopMsixIdentity -Path $script:DesktopMsixPath -Architecture $Architecture

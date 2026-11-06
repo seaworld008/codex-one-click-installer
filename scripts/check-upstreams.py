@@ -30,11 +30,17 @@ BOOTSTRAPS = {
 LATEST_METADATA = "https://releases.openai.com/codex/channels/latest"
 NPM_LATEST = "https://registry.npmjs.org/@openai%2Fcodex/latest"
 WINDOWS_DOCS = "https://learn.chatgpt.com/docs/windows/windows-app"
+WINDOWS_DEPLOYMENT_DOCS = "https://learn.chatgpt.com/docs/enterprise/windows-deployment"
 WINDOWS_INSTALLER = "https://get.microsoft.com/installer/download/9PLM9XGG6VKS"
 WINDOWS_MSIX = {
     "Windows x64 MSIX": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix",
     "Windows arm64 MSIX": "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix",
 }
+WINDOWS_MSIX_CONTENT_TYPE = "application/vnd.ms-appx"
+WINDOWS_MSIX_MIN_BYTES = 1024 * 1024
+# The Store-signed Arm64 package grew beyond the previous 1 GiB guardrail.
+# Keep a finite limit with measured headroom; this is not an unbounded waiver.
+WINDOWS_MSIX_MAX_BYTES = 1200 * 1024 * 1024
 LINUX_DOCS = "https://learn.chatgpt.com/docs/linux/linux-app"
 LINUX_PACKAGES = {
     "Linux deb x64": "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb",
@@ -163,6 +169,23 @@ def validate_linux_package_prefix(filename: str, body: bytes) -> None:
         raise ProbeError(f"{filename} did not return a {package_type} package prefix")
 
 
+def validate_msix_response(response: Response, label: str, expected_url: str) -> None:
+    """Validate the bounded probe's source, MIME type, and ZIP/MSIX signature."""
+    if response.url != expected_url:
+        raise ProbeError(
+            f"{label} redirected to an unexpected URL: {response.url!r}"
+        )
+    content_type = (
+        response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    )
+    if content_type != WINDOWS_MSIX_CONTENT_TYPE:
+        raise ProbeError(
+            f"{label} returned an unexpected Content-Type: {content_type!r}"
+        )
+    if not response.body.startswith(b"PK\x03\x04"):
+        raise ProbeError(f"{label} did not return a ZIP/MSIX local-file prefix")
+
+
 def check_bootstraps() -> None:
     for label, (url, prefix, marker) in BOOTSTRAPS.items():
         response = fetch(url, limit=1024 * 1024)
@@ -237,6 +260,16 @@ def check_windows_app() -> None:
         raise ProbeError(f"Windows documentation returned HTTP {docs.status}")
     if STORE_ID.encode("ascii") not in docs.body:
         raise ProbeError(f"Windows documentation no longer references Store ID {STORE_ID}")
+    deployment_docs = fetch(WINDOWS_DEPLOYMENT_DOCS, limit=4 * 1024 * 1024)
+    if deployment_docs.status != 200:
+        raise ProbeError(
+            f"Windows deployment documentation returned HTTP {deployment_docs.status}"
+        )
+    for url in WINDOWS_MSIX.values():
+        if url.encode("ascii") not in deployment_docs.body:
+            raise ProbeError(
+                f"Windows deployment documentation no longer references {url}"
+            )
 
     installer = fetch(
         WINDOWS_INSTALLER,
@@ -261,13 +294,12 @@ def check_windows_app() -> None:
         )
         if package.status not in {200, 206}:
             raise ProbeError(f"{label} returned HTTP {package.status}")
-        if not package.body.startswith(b"PK"):
-            raise ProbeError(f"{label} did not return a ZIP/MSIX prefix")
+        validate_msix_response(package, label, url)
         total_bytes = parse_bounded_total_bytes(
             package,
             label,
-            minimum=1024 * 1024,
-            maximum=1024 * 1024 * 1024,
+            minimum=WINDOWS_MSIX_MIN_BYTES,
+            maximum=WINDOWS_MSIX_MAX_BYTES,
         )
         print(f"OK: {label} range probe ({total_bytes} total bytes)")
     print(f"OK: Windows docs and Store web installer ({STORE_ID})")

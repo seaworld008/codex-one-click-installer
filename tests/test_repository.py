@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "2.1.0"
+EXPECTED_VERSION = "2.1.1"
 CHECKOUT_V7_0_1 = "3d3c42e5aac5ba805825da76410c181273ba90b1"
 ATTEST_V4_2_2 = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ACTIONLINT_V1_7_12 = "914e7df21a07ef503a81201c76d2b11c789d3fca"
@@ -575,11 +575,20 @@ class RepositoryContractTests(unittest.TestCase):
             'WINDOWS_DOCS = "https://learn.chatgpt.com/docs/windows/windows-app"',
             source,
         )
+        self.assertIn(
+            'WINDOWS_DEPLOYMENT_DOCS = "https://learn.chatgpt.com/docs/enterprise/windows-deployment"',
+            source,
+        )
+        self.assertIn(
+            'WINDOWS_MSIX_CONTENT_TYPE = "application/vnd.ms-appx"', source
+        )
+        self.assertIn("WINDOWS_MSIX_MAX_BYTES = 1200 * 1024 * 1024", source)
         self.assertIn('"Range": "bytes=0-3"', source)
         self.assertIn("Content-Range", source)
         self.assertIn(r'r"bytes\s+\d+-\d+/(\d+)"', source)
-        self.assertIn("minimum=1024 * 1024", source)
-        self.assertIn("maximum=1024 * 1024 * 1024", source)
+        self.assertIn("minimum=WINDOWS_MSIX_MIN_BYTES", source)
+        self.assertIn("maximum=WINDOWS_MSIX_MAX_BYTES", source)
+        self.assertIn("validate_msix_response", source)
         self.assertIn("unsafe total size", source)
 
     def test_upstream_linux_probes_use_official_docs_and_bounded_packages(
@@ -616,8 +625,10 @@ class RepositoryContractTests(unittest.TestCase):
             "$asyncRead.AsyncWaitHandle.WaitOne([int]$remainingMilliseconds)",
             "$request.Abort()",
             "-MaximumBytes 2097152",
-            "-MinimumBytes 1048576",
-            "-MaximumBytes 1073741824",
+            "$DesktopMsixMinimumBytes = 1MB",
+            "$DesktopMsixMaximumBytes = 1200MB",
+            "-MinimumBytes $DesktopMsixMinimumBytes",
+            "-MaximumBytes $DesktopMsixMaximumBytes",
             "-TimeoutMilliseconds 3600000",
             '$expectedName = "OpenAI.Codex"',
             '$expectedPublisher = "CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B"',
@@ -1143,10 +1154,18 @@ class UpstreamProbeTests(unittest.TestCase):
 
     def response(self, status: int, headers: dict[str, str]):
         return self.probes.Response(
-            url="https://example.invalid/package.msix",
+            url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix",
             status=status,
             headers=headers,
             body=b"PK",
+        )
+
+    def msix_response(self, status: int, headers: dict[str, str], body=b"PK\x03\x04"):
+        return self.probes.Response(
+            url="https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix",
+            status=status,
+            headers=headers,
+            body=body,
         )
 
     def test_range_total_is_parsed_and_bounded(self) -> None:
@@ -1183,6 +1202,77 @@ class UpstreamProbeTests(unittest.TestCase):
                         minimum=1024 * 1024,
                         maximum=1024 * 1024 * 1024,
                     )
+
+    def test_msix_size_boundary_uses_finite_updated_guardrail(self) -> None:
+        accepted = self.probes.parse_bounded_total_bytes(
+            self.msix_response(
+                206,
+                {"Content-Range": "bytes 0-3/1161199484"},
+            ),
+            "Windows arm64 MSIX",
+            minimum=self.probes.WINDOWS_MSIX_MIN_BYTES,
+            maximum=self.probes.WINDOWS_MSIX_MAX_BYTES,
+        )
+        self.assertEqual(accepted, 1161199484)
+        with self.assertRaises(self.probes.ProbeError):
+            self.probes.parse_bounded_total_bytes(
+                self.msix_response(
+                    206,
+                    {
+                        "Content-Range": f"bytes 0-3/{self.probes.WINDOWS_MSIX_MAX_BYTES + 1}"
+                    },
+                ),
+                "Windows arm64 MSIX",
+                minimum=self.probes.WINDOWS_MSIX_MIN_BYTES,
+                maximum=self.probes.WINDOWS_MSIX_MAX_BYTES,
+            )
+
+    def test_msix_response_requires_official_source_mime_and_signature(self) -> None:
+        expected = "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix"
+        valid = self.msix_response(
+            206,
+            {
+                "Content-Range": "bytes 0-3/1161199484",
+                "Content-Type": "application/vnd.ms-appx; charset=binary",
+            },
+        )
+        self.probes.validate_msix_response(valid, "Windows arm64 MSIX", expected)
+        cases = (
+            ("https://example.invalid/ChatGPT-arm64.msix", valid),
+            (
+                expected,
+                self.msix_response(
+                    206,
+                    {
+                        "Content-Range": "bytes 0-3/1161199484",
+                        "Content-Type": "application/octet-stream",
+                    },
+                ),
+            ),
+            (
+                expected,
+                self.msix_response(
+                    206,
+                    {
+                        "Content-Range": "bytes 0-3/1161199484",
+                        "Content-Type": "application/vnd.ms-appx",
+                    },
+                    body=b"MZ\x00\x00",
+                ),
+            ),
+        )
+        for url, response in cases:
+            with self.subTest(
+                url=url, headers=dict(response.headers), body=response.body
+            ):
+                response = self.probes.Response(
+                    url=url,
+                    status=response.status,
+                    headers=response.headers,
+                    body=response.body,
+                )
+                with self.assertRaises(self.probes.ProbeError):
+                    self.probes.validate_msix_response(response, "Windows arm64 MSIX", expected)
 
     def test_npm_integrity_requires_exact_sha512_digest(self) -> None:
         valid = "sha512-" + base64.b64encode(b"x" * 64).decode("ascii")
