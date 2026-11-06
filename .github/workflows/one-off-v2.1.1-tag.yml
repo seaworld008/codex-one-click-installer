@@ -1,0 +1,36 @@
+name: One-off v2.1.1 tag helper
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    if: ${{ contains(github.event.head_commit.message, '[release-tag]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Create the annotated release tag once
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          test "$version" = "2.1.1"
+          test "$GITHUB_REF" = "refs/heads/main"
+          tag="v$version"
+          git fetch --force --tags origin
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            echo "Tag $tag already exists; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$tag" "$GITHUB_SHA" --message "Release $tag"
+          git push origin "$tag"
