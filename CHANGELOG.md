@@ -4,7 +4,19 @@
 
 ## [Unreleased]
 
-目标版本：`2.1.0`。
+目标版本：`2.1.2`。
+
+## [2.1.1] - 2026-11-06
+
+### Changed
+
+- Windows upstream smoke 依据官方企业部署文档核验 x64/Arm64 MSIX 来源，并验证 `application/vnd.ms-appx` 与 ZIP/MSIX 本地文件头。
+- 将 MSIX 总大小上限从 1 GiB 调整为有限的 1,200 MiB，以覆盖当前官方 Arm64 包，同时保留最小大小、Range/Content-Length 和异常响应校验。
+
+### Fixed
+
+- 修复官方 Arm64 MSIX 增长到 `1,153,195,344` 字节后被错误判定为不安全，避免定时 Upstream smoke 因过时阈值失败。
+- 新增当前体积、上限拒绝、来源、MIME 类型和内容特征边界测试。
 
 ### Added
 
